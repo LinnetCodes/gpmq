@@ -1,0 +1,36 @@
+[project]
+name = "gpmq"
+version = "0.4.0"
+description = "GPMQ (General Purpose Message Queue) - A lightweight Python distributed message queue built on Redis Streams, designed for personal projects and MVP (Minimum Viable Product) projects."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [
+    {name = "Linnet Codes", email = "linnet.codes@gmail.com"},
+]
+dependencies = [
+    "redis>=5.0.0",
+    "pydantic>=2.0.0",
+    "click>=8.0.0",
+    "gpconfig",
+    "gpclog>=0.2.0",
+]
+
+[project.scripts]
+gpmq = "gpmq.cli:cli"
+gpmq-worker = "gpmq.cli:gpmq_worker"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=4.0",
+    "ruff>=0.4.0",
+]
+docs = [
+    "mkdocs>=1.6.0",
+    "mkdocs-material>=9.5.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

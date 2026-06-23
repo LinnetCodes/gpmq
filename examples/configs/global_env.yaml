@@ -1,0 +1,6 @@
+# global_env.yaml - gpconfig 要求的全局环境配置文件
+# 此文件必须存在于配置文件夹根目录
+
+debug: true
+environment: development
+app_name: gpmq_example
