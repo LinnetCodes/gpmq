@@ -3,7 +3,7 @@ import datetime
 from progressbar import ProgressBar
 from pathlib import Path
 import random
-from gpmq import GPMQClient, ProcessStatus, GPMQProgress
+from gpmq import use_spawn, ProcessStatus, GPMQProgress
 from gpmq.config import set_config_manager, get_client
 from gpmq.log import get_logger
 from gpconfig import GPConfigManager
@@ -259,6 +259,7 @@ def show_menu():
 
 
 def main():
+    use_spawn()
     config = GPConfigManager("gpmq_demo", config_path)
     set_config_manager(config)
     logger = get_logger("gpmq_client")

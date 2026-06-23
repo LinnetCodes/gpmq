@@ -38,6 +38,14 @@ class WorkerManager:
         """Start all worker processes."""
         from gpmq.subscriber.worker import Worker
 
+        if multiprocessing.get_start_method() == "fork":
+            logger.warning(
+                "Running under 'fork' start method; parent-process global state "
+                "(handler registry, log sinks, connections) may leak into workers "
+                "and cause DuplicateMessageTypeError or log corruption. "
+                "Call gpmq.use_spawn() at startup to use spawn semantics."
+            )
+
         worker_count = self._config.get("workers", 2)
         name = self._config.get("name", "subscriber")
         stream_name = self._config.get("stream_name", "gpmq:messages")

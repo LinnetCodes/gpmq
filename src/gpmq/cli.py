@@ -204,6 +204,8 @@ def _create_redis_adapter():
 @click.pass_context
 def cli(ctx: click.Context, config: str | None) -> None:
     """GPMQ - General Purpose Message Queue CLI."""
+    from gpmq import use_spawn
+    use_spawn()
     ctx.ensure_object(dict)
     if config is not None:
         _init_cfg_mgr(config)
@@ -433,5 +435,7 @@ def worker(ctx: click.Context, subscriber_name: str) -> None:
 )
 def gpmq_worker(subscriber_name: str, config: str | None) -> None:
     """Start a GPMQ subscriber worker process."""
+    from gpmq import use_spawn
+    use_spawn()
     _init_cfg_mgr(config)
     _run_worker(subscriber_name)

@@ -1,5 +1,8 @@
 """gpmq - GPMQ (General Purpose Message Queue) - 面向个人项目的 Python 分布式消息队列包."""
 
+# Process policy
+from gpmq.process import use_spawn
+
 # Logging
 from gpmq.log import get_logger
 
@@ -55,6 +58,8 @@ from gpmq.subscriber.subscriber import Subscriber
 __version__ = "0.4.0"
 
 __all__ = [
+    # Process policy
+    "use_spawn",
     # Logging
     "get_logger",
     # Config
