@@ -207,16 +207,53 @@ def test_create_link_creates_resolvable_link(tmp_path):
 
 
 def test_create_link_junction_fallback_on_symlink_failure(tmp_path, monkeypatch):
-    """When os.symlink raises OSError on Windows, fall back to a junction."""
+    """When os.symlink raises OSError on Windows, fall back to a junction.
+
+    The junction fallback shells out to ``cmd /c mklink /J``, which only exists
+    on real Windows. To keep the test portable across all hosts (Linux/WSL/macOS
+    AND Windows with/without symlink privilege), we spy on ``subprocess.run``:
+    assert it dispatches the correct ``mklink /J`` command, then stand up a real
+    link via the host-appropriate mechanism so ``link.resolve() ==
+    target.resolve()`` still holds.
+
+    Note: on Windows the spy must NOT just call ``os.symlink`` — the scenario
+    under test is precisely "no symlink privilege", so the spy's link creation
+    falls back to a real ``mklink /J`` (junctions need no privilege), mirroring
+    ``_make_dir_link`` above.
+    """
     target = tmp_path / "cfgs_windows"
     target.mkdir()
     link = tmp_path / "configs"
 
+    # Capture the real symlink & subprocess.run before patching; the spy uses
+    # them to create the link that mklink /J would have produced on Windows.
+    real_symlink = os.symlink
+    real_run = subprocess.run
+
     def _fail_symlink(*args, **kwargs):
         raise OSError("symbolic link privilege not held")
 
+    def _make_host_link():
+        """Create a dir link at ``link`` -> ``target`` using whatever the host
+        actually supports (symlink on POSIX / privileged Windows, mklink /J on
+        privilege-less Windows)."""
+        try:
+            real_symlink(target, link, target_is_directory=True)
+        except OSError:
+            real_run(
+                ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+                check=True,
+                capture_output=True,
+            )
+
+    def _fake_mklink(args, **kwargs):
+        assert args == ["cmd", "/c", "mklink", "/J", str(link), str(target)], args
+        _make_host_link()
+        return subprocess.CompletedProcess(args=args, returncode=0)
+
     monkeypatch.setattr(os, "symlink", _fail_symlink)
     monkeypatch.setattr(platform, "system", lambda: "Windows")
+    monkeypatch.setattr(subprocess, "run", _fake_mklink)
 
     method = ic.create_link(link, target)
     assert method == "junction"
