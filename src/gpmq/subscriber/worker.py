@@ -294,13 +294,17 @@ class Worker(Process):
         if isinstance(payload, str):
             payload = json.loads(payload)
 
+        target_raw = fields.get("target_subscribers")
+        target_list = json.loads(target_raw) if target_raw else None
+
         message = Message(
             id=msg_id,
             type=fields.get("type", ""),
             timestamp=fields.get("timestamp", ""),
             publisher=fields.get("publisher", ""),
             payload=payload,
-            correlation_id=fields.get("correlation_id", None)
+            correlation_id=fields.get("correlation_id", None),
+            target_subscribers=target_list,
         )
         logger.debug(f"subscriber '{self._subscriber_name}' received message from '{message.publisher}', "
                      f"id: '{message.id}', type: '{message.type}', payload: '{message.payload}', "
@@ -312,6 +316,17 @@ class Worker(Process):
             logger.debug(f"subscriber '{self._subscriber_name}' skipped message from '{message.publisher}', "
                          f"id: '{message.id}'")
             return
+
+        # --- 2b. Filter by target subscribers (targeted publishing) ---
+        if (message.target_subscribers is not None
+                and self._subscriber_name not in message.target_subscribers):
+            self._redis.xack(self._stream_name, self._subscriber_name, msg_id)
+            logger.debug(
+                f"subscriber '{self._subscriber_name}' discarded message id '{message.id}': "
+                f"not in target_subscribers {message.target_subscribers}"
+            )
+            return
+
         logger.debug(f"subscriber '{self._subscriber_name}' will process message from '{message.publisher}', "
                      f"id: '{message.id}'")
         if self._audit:

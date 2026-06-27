@@ -661,3 +661,85 @@ class TestWorkerContextProcessorLoading:
             worker.prepare_worker_context({
                 "worker_context_processor": "nonexistent.module.func"
             })
+
+
+class TestWorkerTargetSubscribersFilter:
+    """Tests for target_subscribers discard logic in _process_message()."""
+
+    def _make_worker(self, message_types, subscriber_name="test-subscriber"):
+        from gpmq.config import SubscriberConfig
+        from gpmq.subscriber.worker import Worker
+
+        config_dict = _make_subscriber_config(
+            name=subscriber_name, message_types=message_types
+        )
+        config = SubscriberConfig(**config_dict)
+        worker = Worker(
+            subscriber_name=subscriber_name,
+            stream_name="gpmq:messages",
+            message_types=message_types,
+            worker_id=f"{subscriber_name}-worker-0",
+            hostname="test-host",
+            config_dict=config.model_dump(),
+        )
+        worker._redis = MagicMock()
+        worker._audit = MagicMock()
+        return worker
+
+    def test_discards_when_not_in_target_list(self):
+        """Subscriber not in target_subscribers should ACK and skip, no result."""
+        worker = self._make_worker(["order_created"])
+        mock_handler = MagicMock()
+
+        msg_id, fields = _make_stream_message(msg_id="t-1", msg_type="order_created")
+        fields["target_subscribers"] = json.dumps(["other-sub"])
+
+        worker._process_message(msg_id, fields, mock_handler)
+
+        mock_handler.assert_not_called()
+        worker._redis.xack.assert_called_once_with(
+            "gpmq:messages", "test-subscriber", "t-1"
+        )
+        worker._redis.publish.assert_not_called()
+        worker._audit.save_result.assert_not_called()
+
+    def test_processes_when_in_target_list(self):
+        """Subscriber in target_subscribers should process normally."""
+        worker = self._make_worker(["order_created"])
+        mock_handler = MagicMock(return_value={"ok": True})
+
+        msg_id, fields = _make_stream_message(msg_id="t-2", msg_type="order_created")
+        fields["target_subscribers"] = json.dumps(["test-subscriber", "other-sub"])
+
+        worker._process_message(msg_id, fields, mock_handler)
+
+        mock_handler.assert_called_once()
+        worker._redis.publish.assert_called_once()
+
+    def test_processes_when_target_field_absent(self):
+        """No target_subscribers field -> legacy behavior (process)."""
+        worker = self._make_worker(["order_created"])
+        mock_handler = MagicMock(return_value=None)
+
+        msg_id, fields = _make_stream_message(msg_id="t-3", msg_type="order_created")
+        # No 'target_subscribers' key in fields
+
+        worker._process_message(msg_id, fields, mock_handler)
+
+        mock_handler.assert_called_once()
+        worker._redis.publish.assert_called_once()
+
+    def test_target_filter_applies_after_type_filter(self):
+        """Wrong type AND not targeted -> ACK once (type filter wins)."""
+        worker = self._make_worker(["order_created"])
+        mock_handler = MagicMock()
+
+        msg_id, fields = _make_stream_message(msg_id="t-4", msg_type="email_sent")
+        fields["target_subscribers"] = json.dumps(["other-sub"])
+
+        worker._process_message(msg_id, fields, mock_handler)
+
+        mock_handler.assert_not_called()
+        worker._redis.xack.assert_called_once_with(
+            "gpmq:messages", "test-subscriber", "t-4"
+        )
