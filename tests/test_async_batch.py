@@ -90,8 +90,24 @@ class TestGPMQAsyncBatchHandlerSendMessage:
         handler.send_message("type_a", {"id": 1})
         handler.send_message("type_b", {"id": 2}, correlation_id="corr-1")
         assert handler._pending_messages == [
-            ("type_a", {"id": 1}, None),
-            ("type_b", {"id": 2}, "corr-1"),
+            ("type_a", {"id": 1}, None, None),
+            ("type_b", {"id": 2}, "corr-1", None),
+        ]
+
+    def test_send_message_stores_target_subscribers_str(self):
+        """send_message should store a single-string target as-is (4th element)."""
+        client = _make_mock_client()
+        handler = GPMQAsyncBatchHandler(client)
+        handler.send_message("type_a", {"id": 1}, target_subscribers="sub-a")
+        assert handler._pending_messages == [("type_a", {"id": 1}, None, "sub-a")]
+
+    def test_send_message_stores_target_subscribers_list(self):
+        """send_message should store a list target as-is (4th element)."""
+        client = _make_mock_client()
+        handler = GPMQAsyncBatchHandler(client)
+        handler.send_message("type_a", {"id": 1}, target_subscribers=["sub-a", "sub-b"])
+        assert handler._pending_messages == [
+            ("type_a", {"id": 1}, None, ["sub-a", "sub-b"])
         ]
 
 
@@ -579,3 +595,67 @@ class TestGPMQAsyncBatchHandlerProgress:
         results = handler.wait_all()
 
         assert results == complete_result
+
+
+class TestGPMQAsyncBatchHandlerForwardsTarget:
+    """Tests that wait_all forwards queued target_subscribers to publish_async."""
+
+    def test_wait_all_forwards_target_to_publish_async(self):
+        client = _make_mock_client()
+        rh1 = MagicMock(spec=ResultHandler)
+        client.publish_async.side_effect = [rh1]
+        client.wait_all.return_value = [
+            {"sub-a": _make_success_result("sub-a", "msg-1")}
+        ]
+
+        handler = GPMQAsyncBatchHandler(client, queue_size=32)
+        handler.send_message("t1", {"id": 1}, target_subscribers=["sub-a", "sub-b"])
+        handler.wait_all()
+
+        # publish_async receives the raw target list as 4th positional arg
+        call_args = client.publish_async.call_args
+        assert call_args[0] == ("t1", {"id": 1}, None, ["sub-a", "sub-b"])
+
+    def test_wait_all_forwards_none_when_no_target(self):
+        client = _make_mock_client()
+        rh1 = MagicMock(spec=ResultHandler)
+        client.publish_async.side_effect = [rh1]
+        client.wait_all.return_value = [
+            {"sub-a": _make_success_result("sub-a", "msg-1")}
+        ]
+
+        handler = GPMQAsyncBatchHandler(client, queue_size=32)
+        handler.send_message("t1", {"id": 1})
+        handler.wait_all()
+
+        call_args = client.publish_async.call_args
+        assert call_args[0] == ("t1", {"id": 1}, None, None)
+
+    def test_wait_all_forwards_target_during_refill(self):
+        """A message sent during the sliding-window refill must also carry its target.
+
+        total (3) > queue_size (2) so msg-2 is published via the refill branch,
+        not the initial batch.
+        """
+        client = _make_mock_client()
+        rh1 = MagicMock(spec=ResultHandler)
+        rh2 = MagicMock(spec=ResultHandler)
+        rh3 = MagicMock(spec=ResultHandler)
+        client.publish_async.side_effect = [rh1, rh2, rh3]
+        # Round 1: both initial messages complete -> one refill (msg-2) is sent
+        result_r1 = [
+            {"sub-a": _make_success_result("sub-a", "msg-0")},
+            {"sub-b": _make_success_result("sub-b", "msg-1")},
+        ]
+        result_r2 = [{"sub-c": _make_success_result("sub-c", "msg-2")}]
+        client.wait_all.side_effect = [result_r1, result_r2]
+
+        handler = GPMQAsyncBatchHandler(client, queue_size=2)
+        handler.send_message("t0", {"id": 0})
+        handler.send_message("t1", {"id": 1})
+        handler.send_message("t2", {"id": 2}, target_subscribers="sub-x")
+        handler.wait_all()
+
+        # Third publish_async call (index 2) is the refill of t2 and carries "sub-x"
+        refill_call = client.publish_async.call_args_list[2]
+        assert refill_call[0] == ("t2", {"id": 2}, None, "sub-x")

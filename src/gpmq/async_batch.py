@@ -1,7 +1,7 @@
 """GPMQAsyncBatchHandler - batch async message processing."""
 
 import time
-from typing import Optional
+from typing import Optional, Union
 
 from gpmq.client import GPMQClient
 from gpmq.models.result import ProcessResult, ProcessStatus
@@ -30,7 +30,9 @@ class GPMQAsyncBatchHandler:
         self._progress = progress
         self._timeout = timeout
         self._queue_size = queue_size
-        self._pending_messages: list[tuple[str, dict, Optional[str]]] = []
+        self._pending_messages: list[
+            tuple[str, dict, Optional[str], Optional[Union[str, list[str]]]]
+        ] = []
         self._all_results: list[dict[str, ProcessResult]] = []
         self._waited = False
 
@@ -39,9 +41,21 @@ class GPMQAsyncBatchHandler:
         message_type: str,
         payload: dict,
         correlation_id: Optional[str] = None,
+        target_subscribers: Optional[Union[str, list[str]]] = None,
     ) -> None:
-        """Store message for deferred publishing."""
-        self._pending_messages.append((message_type, payload, correlation_id))
+        """Store message for deferred publishing.
+
+        Args:
+            message_type: Type of message to publish.
+            payload: Message payload dict.
+            correlation_id: Optional correlation ID.
+            target_subscribers: Optional subscriber name or list of names.
+                Stored as-is and forwarded to ``client.publish_async`` during
+                ``wait_all``; normalization and validation happen there.
+        """
+        self._pending_messages.append(
+            (message_type, payload, correlation_id, target_subscribers)
+        )
 
     def wait_all(self) -> list[dict[str, ProcessResult]]:
         """Wait for all messages to be sent and results collected.
@@ -72,8 +86,8 @@ class GPMQAsyncBatchHandler:
         next_idx = 0
 
         for i in range(window_size):
-            msg_type, payload, corr_id = self._pending_messages[i]
-            handler = self._client.publish_async(msg_type, payload, corr_id)
+            msg_type, payload, corr_id, target = self._pending_messages[i]
+            handler = self._client.publish_async(msg_type, payload, corr_id, target)
             active.append((i, handler))
             next_idx = i + 1
 
@@ -101,10 +115,10 @@ class GPMQAsyncBatchHandler:
                     result_map[orig_idx] = result
                     # Refill: send next pending message
                     if next_idx < total:
-                        msg_type, payload, corr_id = self._pending_messages[next_idx]
+                        msg_type, payload, corr_id, target = self._pending_messages[next_idx]
                         try:
                             new_handler = self._client.publish_async(
-                                msg_type, payload, corr_id
+                                msg_type, payload, corr_id, target
                             )
                             new_active.append((next_idx, new_handler))
                         except Exception:
