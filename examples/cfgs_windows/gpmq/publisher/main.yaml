@@ -10,5 +10,5 @@ async_batch_queue_size: 32
 
 # --- 审计与日志 ---
 enable_audit: true
-audit_db_path: "C:\temp\gpmq\db\gpmq_audit_publisher.db"
+audit_db_path: "C:\\temp\\gpmq\\db\\gpmq_audit_publisher.db"
 log_category: "gpmq_client"

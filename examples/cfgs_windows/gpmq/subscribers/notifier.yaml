@@ -31,5 +31,5 @@ worker_context_processor: "gpmq.subscriber.examples.example_worker_context_proce
 
 # --- 审计与日志 ---
 enable_audit: true
-audit_db_path: "C:\temp\gpmq\db\gpmq_audit_notifier.db"
+audit_db_path: "C:\\temp\\gpmq\\db\\gpmq_audit_notifier.db"
 log_category: "notifier"

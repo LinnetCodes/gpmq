@@ -46,5 +46,5 @@ run_forever_method_paras:
 
 # --- 审计与日志 ---
 enable_audit: true
-audit_db_path: "C:\temp\gpmq\db\gpmq_audit_data_loader.db"
+audit_db_path: "C:\\temp\\gpmq\\db\\gpmq_audit_data_loader.db"
 log_category: "data_loader"

@@ -9,5 +9,5 @@ publish_timeout: 30.0
 
 # --- 审计与日志 ---
 enable_audit: false
-audit_db_path: "C:\temp\gpmq\db\embedded_publisher.db"
+audit_db_path: "C:\\temp\\gpmq\\db\\embedded_publisher.db"
 log_category: "pingpong"

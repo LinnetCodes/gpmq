@@ -22,5 +22,5 @@ registry_key_prefix: "gpmq"
 subscriber_timeout: 60.0
 
 # --- 审计与日志 ---
-audit_db_path: "C:\temp\gpmq\db\gpmq_audit.db"
+audit_db_path: "C:\\temp\\gpmq\\db\\gpmq_audit.db"
 log_category: "gpmq"
