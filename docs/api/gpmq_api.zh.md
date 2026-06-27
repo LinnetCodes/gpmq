@@ -11,6 +11,8 @@
   - [get_client](#get_client)
   - [get_subscriber](#get_subscriber)
 - [GPMQClient](#gpmqclient)
+  - [定向发布](#定向发布)
+  - [InvalidTargetSubscriberError](#invalidtargetsubscribererror)
 - [Subscriber](#subscriber)
 - [ResultHandler](#resulthandler)
 - [GPMQAsyncBatchHandler](#gpmqasyncbatchhandler)
@@ -145,6 +147,7 @@ publish(
     payload: dict,
     correlation_id: Optional[str] = None,
     timeout: Optional[float] = None,
+    target_subscribers: Optional[Union[str, list[str]]] = None,
 ) -> dict[str, ProcessResult]
 ```
 
@@ -158,12 +161,14 @@ publish(
 | `payload` | `dict` | 消息载荷 |
 | `correlation_id` | `str?` | 可选，用于追踪消息链的关联 ID |
 | `timeout` | `float?` | 最大等待秒数。`None` = 使用配置默认值。 |
+| `target_subscribers` | `str \| list[str] \| None` | 可选，允许处理的订阅者名称白名单。只有列表中的订阅者会处理该消息，已注册但不在列表中的订阅者会丢弃它。`None`（默认）广播给所有匹配的订阅者。详见[定向发布](#定向发布)。 |
 
 **返回值** — `dict[str, ProcessResult]`，以订阅者名称为键。
 
 **注意事项**
 - 如果没有活跃的订阅者，立即返回空字典。
 - 未在 `timeout` 内响应的订阅者状态为 `ProcessStatus.TIMEOUT`。
+- 设置 `target_subscribers` 时，返回字典中只包含被指定的订阅者。
 
 ---
 
@@ -174,6 +179,7 @@ publish_async(
     message_type: str,
     payload: dict,
     correlation_id: Optional[str] = None,
+    target_subscribers: Optional[Union[str, list[str]]] = None,
 ) -> ResultHandler
 ```
 
@@ -186,6 +192,7 @@ publish_async(
 | `message_type` | `str` | 消息类型标识 |
 | `payload` | `dict` | 消息载荷 |
 | `correlation_id` | `str?` | 可选，用于追踪消息链的关联 ID |
+| `target_subscribers` | `str \| list[str] \| None` | 可选，允许处理的订阅者名称白名单。详见[定向发布](#定向发布)。 |
 
 **返回值** — `ResultHandler`，用于延迟收集结果。
 
@@ -198,6 +205,7 @@ send(
     message_type: str,
     payload: dict,
     correlation_id: Optional[str] = None,
+    target_subscribers: Optional[Union[str, list[str]]] = None,
 ) -> str
 ```
 
@@ -210,10 +218,47 @@ send(
 | `message_type` | `str` | 消息类型标识 |
 | `payload` | `dict` | 消息载荷 |
 | `correlation_id` | `str?` | 可选，用于追踪消息链的关联 ID |
+| `target_subscribers` | `str \| list[str] \| None` | 可选，允许处理的订阅者名称白名单。详见[定向发布](#定向发布)。 |
 
 **返回值** — Redis 生成的消息 ID（可用于日志记录）。
 
 **适用场景** — 通知类消息，不需要知道订阅者是否/何时处理完成（如发送邮件、记录事件日志等）。
+
+---
+
+#### 定向发布
+
+`publish()`、`publish_async()`、`send()` 以及[批处理 `send_message()`](#send_message) 都接受可选的 `target_subscribers` 参数，用于把消息限定投递给一个或多个**指定**订阅者——即使其他订阅者也注册了同一消息类型。
+
+```python
+# 即便 "notifier" 也处理 "load_user_profile"，这里只有 "data_loader" 会处理
+results = client.publish("load_user_profile", {"user_name": "alice"},
+                         target_subscribers="data_loader")
+
+# 指定多个目标
+client.send("order_created", {...}, target_subscribers=["billing", "warehouse"])
+```
+
+**工作原理**
+- `target_subscribers` 接受单个名称（`str`）或列表（`list[str]`）；会去重并保持顺序。
+- `None`（默认）广播给所有注册了该类型的订阅者——完全向后兼容。
+- 发布者**在发送前校验**：每个被指定的目标必须已注册，且在其 `handlers` 中声明了该消息类型。未知或无能力的目标会抛出 `InvalidTargetSubscriberError`（见下文），消息**不会**被写入 Stream。
+- 不在目标列表中的订阅者会静默地 ACK 并丢弃消息（不发布结果）。
+- `ResultHandler` 只等待被指定的订阅者；已注册且有能力但当前不活跃的目标会以 `ProcessStatus.TIMEOUT` 体现。
+
+**校验说明** — 只校验"能力"，不校验"活跃"。已注册该类型但当前没有活跃 worker 的目标会通过校验，随后在下游超时，这与既有 `publish()` 对不活跃订阅者的行为一致。
+
+---
+
+#### `InvalidTargetSubscriberError`
+
+```python
+class InvalidTargetSubscriberError(GPMQError):
+    message_type: str
+    failures: list[tuple[str, str]]   # (订阅者名称, 原因)
+```
+
+当某个被指定的目标无法处理该消息类型时，由 `publish` / `publish_async` / `send` / 批处理 `send_message`（在 `wait_all` 期间）抛出。`原因` 取值为 `"not registered"`（未知的订阅者名称）或 `"does not handle message type"`（已注册但该类型不在其 handlers 中）。所有无效目标会被聚合后一次性报出。
 
 ---
 
@@ -247,7 +292,7 @@ wait_all(
 async_batch(
     progress: Optional[GPMQProgress] = None,
     timeout: Optional[float] = None,
-    queue_size: int = 32,
+    queue_size: Optional[int] = None,
 ) -> GPMQAsyncBatchHandler
 ```
 
@@ -259,7 +304,7 @@ async_batch(
 |------|------|--------|------|
 | `progress` | `GPMQProgress?` | `None` | 进度指示器 |
 | `timeout` | `float?` | `None` | 所有结果的总超时。`None` = 无限等待。 |
-| `queue_size` | `int` | `32` | 最大并发在途消息数 |
+| `queue_size` | `int?` | `None` | 最大并发在途消息数。`None` = 使用配置中的 `async_batch_queue_size`（默认 `32`）。 |
 
 ---
 
@@ -354,7 +399,7 @@ stop() -> None
 优雅停止订阅者：停止 Worker → 停止心跳线程 → 从 Redis 注销 → 断开连接。
 
 **注意事项**
-- 先向 Worker 进程发送 SIGTERM，等待最多 30 秒，之后发送 SIGKILL 强制终止。
+- 等待最多 `subscriber_timeout`（取自配置）让每个 Worker 优雅退出；若仍存活，则发送 SIGTERM 并再等待一段宽限时间。
 
 ---
 
@@ -512,10 +557,13 @@ send_message(
     message_type: str,
     payload: dict,
     correlation_id: Optional[str] = None,
+    target_subscribers: Optional[Union[str, list[str]]] = None,
 ) -> None
 ```
 
 将消息加入待发送队列。消息在调用 `wait_all()` 之前不会发布。
+
+`target_subscribers` 会原样保存，并在 `wait_all()` 期间转发给 `client.publish_async()`，归一化和校验在那里进行。详见[定向发布](#定向发布)。
 
 ---
 
@@ -726,6 +774,7 @@ class Message(BaseModel):
     publisher: str
     payload: dict
     correlation_id: Optional[str] = None
+    target_subscribers: Optional[list[str]] = None
 ```
 
 消息队列中传递的核心数据单元。
@@ -738,6 +787,7 @@ class Message(BaseModel):
 | `publisher` | `str` | 发布者名称 |
 | `payload` | `dict` | 消息载荷 |
 | `correlation_id` | `str?` | 用于追踪消息链的关联 ID |
+| `target_subscribers` | `list[str]?` | 可选，允许处理的订阅者名称白名单（由发布方法的 `target_subscribers` 设置；`None` = 广播） |
 
 ---
 

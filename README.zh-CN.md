@@ -7,6 +7,7 @@
 ## 特性
 
 - **多种消息模式** — 同步、异步、发后即忘（fire-and-forget）、批量滑动窗口并发、消息转发
+- **定向发布** — 通过 `target_subscribers` 把消息投递给指定的一个或多个订阅者；已注册但不在列表中的订阅者会丢弃它
 - **可配置的持久运行方法** — 通过 `@run_forever_method` 自定义订阅者的主循环
 - **Redis Streams 后端** — 基于 Consumer Group 的可靠消息投递
 - **多进程 Worker** — 每个订阅者可配置独立 Worker 数量
@@ -235,6 +236,21 @@ def on_ping(msg: Message, context: Optional[dict[str, Any]] = None) -> Any:
         context["publisher"].send("msg_pong", {"reply_to": msg.id}, correlation_id=msg.id)
     return {"status": "pong_sent"}
 ```
+
+### 定向发布
+
+`publish()`、`publish_async()`、`send()` 以及批处理 `send_message()` 都接受可选的 `target_subscribers` 参数，用于把消息限定投递给一个或多个**指定**订阅者——即使其他订阅者也注册了同一消息类型。接受单个名称或列表；`None`（默认）广播给所有匹配的订阅者。
+
+```python
+# 只有 "data_loader" 会处理这条消息；"notifier"（如果也注册了）会丢弃它
+results = client.publish("load_user_profile", {"user_name": "alice"},
+                         target_subscribers="data_loader")
+
+# 指定多个目标（publish_async / send / 批处理同样支持）
+client.send("order_created", {...}, target_subscribers=["billing", "warehouse"])
+```
+
+发布者会在**发送前**校验目标：每个被指定的目标必须已注册，且在其 handlers 中声明了该消息类型，否则抛出 `InvalidTargetSubscriberError`，消息不会被写入 Stream。不在目标列表中的订阅者会静默 ACK 并丢弃。详见 [API 文档](docs/api/gpmq_api.zh.md#定向发布)。
 
 ## 配置参考
 
@@ -498,6 +514,39 @@ gpmq-worker SUBSCRIBER_NAME [--config PATH]
 | `get_consumer_group_workers(name)` | 查询消费组中所有 Worker |
 | `WorkerInfo` | Worker 状态数据模型 |
 | `ConsumerGroupWorkers` | 消费组 Worker 列表模型 |
+
+## 示例（Examples）
+
+[`examples/`](examples/) 目录包含可运行的 demo 及其配置模板：
+
+| 路径 | 说明 |
+|---|---|
+| `examples/client/demo_client.py` | 交互式菜单，包含多种发布者 demo（同步 / 异步 / 批量 / 超时 / 压测 / 消息转发） |
+| `examples/worker/demo_data_loader_worker.py` | `data_loader` 订阅者 Worker |
+| `examples/worker/demo_notifier_worker.py` | `notifier` 订阅者 Worker |
+| `examples/cfgs_linux/`、`examples/cfgs_windows/` | 按操作系统区分的配置与日志模板 |
+| `examples/init_configs.py` | 把 `examples/configs` 链接到对应的 `cfgs_<os>/` 目录 |
+| `examples/unlink_configs.py` | 安全地移除 `examples/configs` 链接 |
+
+> demo 用到了 `progressbar`，请先安装 dev 额外依赖：`pip install -e ".[dev]"`。
+
+### 运行 demo 之前
+
+demo 从 `examples/configs` 读取配置，而该目录**并未**纳入版本管理。每台机器上都需要先建立到当前操作系统配置模板的链接：
+
+```bash
+python examples/init_configs.py     # 创建 examples/configs -> cfgs_linux/ 或 cfgs_windows/
+```
+
+该脚本可重入，重复运行结果一致，会自动识别操作系统（Windows 下若没有符号链接权限会自动回退为目录联接 junction）。
+
+> **不要提交 `examples/configs` 及其中的任何内容。** 它只是一个本地链接（已写入 `.gitignore`），把它指向错误目标——或误提交成一个真实目录——会影响他人使用 demo。**最佳实践**：不需要运行 demo 时，运行以下命令安全地删除该链接，避免误提交：
+>
+> ```bash
+> python examples/unlink_configs.py
+> ```
+
+配置模板中包含与操作系统相关的**文件路径**（如 `audit_db_path`、日志路径）。你可以按自己的环境修改这些配置项，但请将此类改动保留在**本地**——只在本地分支提交，不要推送到远程仓库，以保持模板的可移植性。
 
 ## 许可证
 

@@ -5,6 +5,7 @@
 ## 特性
 
 - **多种消息模式** — 同步、异步、fire-and-forget、滑动窗口批量并发、消息中继
+- **定向发布** — 通过 `target_subscribers` 把消息投递给指定的一个或多个订阅者；不在列表中的订阅者会丢弃它
 - **可定制 run_forever 方法** — 通过 `@run_forever_method` 自定义订阅者主循环
 - **Redis Streams 后端** — 基于 Consumer Group 的可靠消息投递
 - **多进程 Worker** — 每个订阅者可配置独立 Worker 数量

@@ -7,6 +7,7 @@
 ## Features
 
 - **Multiple messaging patterns** — sync, async, fire-and-forget, batch with sliding-window concurrency, and message relay
+- **Targeted publishing** — direct a message to specific subscriber(s) via `target_subscribers`; registered-but-unlisted subscribers discard it
 - **Configurable run-forever method** — customize the subscriber's main loop with `@run_forever_method`
 - **Redis Streams backend** — reliable message delivery with consumer groups
 - **Multi-process workers** — configurable worker count per subscriber
@@ -235,6 +236,21 @@ def on_ping(msg: Message, context: Optional[dict[str, Any]] = None) -> Any:
         context["publisher"].send("msg_pong", {"reply_to": msg.id}, correlation_id=msg.id)
     return {"status": "pong_sent"}
 ```
+
+### Targeted publishing
+
+`publish()`, `publish_async()`, `send()`, and batch `send_message()` accept an optional `target_subscribers` argument that restricts delivery to one or more **specific** subscribers — even when other subscribers are registered for the same type. Accepts a single name or a list; `None` (default) broadcasts to all matching.
+
+```python
+# Only "data_loader" processes this; "notifier" (if also registered) discards it
+results = client.publish("load_user_profile", {"user_name": "alice"},
+                         target_subscribers="data_loader")
+
+# Multiple targets (works with publish_async / send / batch too)
+client.send("order_created", {...}, target_subscribers=["billing", "warehouse"])
+```
+
+The publisher validates targets **before** sending: every named target must be registered and declare the message type in its handlers, otherwise `InvalidTargetSubscriberError` is raised and the message is never written to the stream. Non-targeted subscribers ACK-and-discard silently. See the [API reference](docs/api/gpmq_api.md#targeted-publishing) for details.
 
 ## Configuration Reference
 
@@ -498,6 +514,39 @@ gpmq-worker SUBSCRIBER_NAME [--config PATH]
 | `get_consumer_group_workers(name)` | Query all workers in a consumer group |
 | `WorkerInfo` | Worker status data model |
 | `ConsumerGroupWorkers` | Consumer group worker list model |
+
+## Examples
+
+The [`examples/`](examples/) directory contains runnable demos and their configuration templates:
+
+| Path | Description |
+|---|---|
+| `examples/client/demo_client.py` | Interactive menu of publisher demos (sync / async / batch / timeout / stress / message relay) |
+| `examples/worker/demo_data_loader_worker.py` | `data_loader` subscriber worker |
+| `examples/worker/demo_notifier_worker.py` | `notifier` subscriber worker |
+| `examples/cfgs_linux/`, `examples/cfgs_windows/` | OS-specific config + log templates |
+| `examples/init_configs.py` | Links `examples/configs` to the matching `cfgs_<os>/` directory |
+| `examples/unlink_configs.py` | Safely removes the `examples/configs` link |
+
+> The demos import `progressbar`, so install the dev extra first: `pip install -e ".[dev]"`.
+
+### Before running a demo
+
+Demos read their config from `examples/configs`, which is **not** checked in. For each machine you must first create the link to your OS's config template:
+
+```bash
+python examples/init_configs.py     # creates examples/configs -> cfgs_linux/ or cfgs_windows/
+```
+
+This is idempotent and safe to re-run. It auto-detects the OS (Windows uses a directory junction if symlink privilege is unavailable).
+
+> **Do not commit `examples/configs` or anything inside it.** It is a local link (already listed in `.gitignore`) and pointing it at the wrong target — or committing a real directory — will break the demos for others. **Best practice:** when you are not running demos, remove the link so it can never be committed by accident:
+>
+> ```bash
+> python examples/unlink_configs.py
+> ```
+
+The config templates contain OS-specific **file paths** (e.g. `audit_db_path`, log paths). Feel free to edit these to match your environment, but keep such changes **local** — commit them only to your local branch and do not push them to the remote, so the templates stay portable.
 
 ## License
 

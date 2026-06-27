@@ -5,6 +5,7 @@
 ## Features
 
 - **Multiple messaging patterns** — sync, async, fire-and-forget, batch with sliding-window concurrency, and message relay
+- **Targeted publishing** — direct a message to specific subscriber(s) via `target_subscribers`; others discard it
 - **Configurable run-forever method** — customize the subscriber's main loop with `@run_forever_method`
 - **Redis Streams backend** — reliable message delivery with consumer groups
 - **Multi-process workers** — configurable worker count per subscriber

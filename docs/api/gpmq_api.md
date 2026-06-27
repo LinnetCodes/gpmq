@@ -11,6 +11,8 @@ Configuration and lifecycle management functions, plus the core classes for publ
   - [get_client](#get_client)
   - [get_subscriber](#get_subscriber)
 - [GPMQClient](#gpmqclient)
+  - [Targeted publishing](#targeted-publishing)
+  - [InvalidTargetSubscriberError](#invalidtargetsubscribererror)
 - [Subscriber](#subscriber)
 - [ResultHandler](#resulthandler)
 - [GPMQAsyncBatchHandler](#gpmqasyncbatchhandler)
@@ -145,6 +147,7 @@ publish(
     payload: dict,
     correlation_id: Optional[str] = None,
     timeout: Optional[float] = None,
+    target_subscribers: Optional[Union[str, list[str]]] = None,
 ) -> dict[str, ProcessResult]
 ```
 
@@ -158,12 +161,14 @@ Publish a message and **block** until all subscribers return results (or timeout
 | `payload` | `dict` | Message payload |
 | `correlation_id` | `str?` | Optional ID for tracing message chains |
 | `timeout` | `float?` | Max seconds to wait. `None` = use config default. |
+| `target_subscribers` | `str \| list[str] \| None` | Optional allow-list of subscriber names. Only these subscribers process the message; registered-but-unlisted subscribers discard it. `None` (default) broadcasts to all matching. See [Targeted publishing](#targeted-publishing). |
 
 **Returns** — `dict[str, ProcessResult]`, keyed by subscriber name.
 
 **Notes**
 - If no subscribers are active, returns an empty dict immediately.
 - Subscribers that don't respond within `timeout` get `ProcessStatus.TIMEOUT`.
+- When `target_subscribers` is set, the result dict contains only the targeted subscribers.
 
 ---
 
@@ -174,6 +179,7 @@ publish_async(
     message_type: str,
     payload: dict,
     correlation_id: Optional[str] = None,
+    target_subscribers: Optional[Union[str, list[str]]] = None,
 ) -> ResultHandler
 ```
 
@@ -186,6 +192,7 @@ Publish a message and return a `ResultHandler` immediately. Call `handler.wait()
 | `message_type` | `str` | Message type identifier |
 | `payload` | `dict` | Message payload |
 | `correlation_id` | `str?` | Optional ID for tracing message chains |
+| `target_subscribers` | `str \| list[str] \| None` | Optional allow-list of subscriber names. See [Targeted publishing](#targeted-publishing). |
 
 **Returns** — `ResultHandler` for deferred result collection.
 
@@ -198,6 +205,7 @@ send(
     message_type: str,
     payload: dict,
     correlation_id: Optional[str] = None,
+    target_subscribers: Optional[Union[str, list[str]]] = None,
 ) -> str
 ```
 
@@ -210,10 +218,47 @@ Fire-and-forget publish. Sends the message to the Redis Stream but does **not** 
 | `message_type` | `str` | Message type identifier |
 | `payload` | `dict` | Message payload |
 | `correlation_id` | `str?` | Optional ID for tracing message chains |
+| `target_subscribers` | `str \| list[str] \| None` | Optional allow-list of subscriber names. See [Targeted publishing](#targeted-publishing). |
 
 **Returns** — The Redis-generated message ID (useful for logging).
 
 **When to use** — Notification-style messages where you don't need to know if or when subscribers processed them (e.g., sending emails, logging events).
+
+---
+
+#### Targeted publishing
+
+`publish()`, `publish_async()`, `send()`, and [batch `send_message()`](#send_message) all accept an optional `target_subscribers` argument that restricts delivery to one or more **specific** subscribers, even when other subscribers are registered for the same message type.
+
+```python
+# Only "data_loader" processes this, even if "notifier" also handles "load_user_profile"
+results = client.publish("load_user_profile", {"user_name": "alice"},
+                         target_subscribers="data_loader")
+
+# Multiple targets
+client.send("order_created", {...}, target_subscribers=["billing", "warehouse"])
+```
+
+**How it works**
+- `target_subscribers` accepts a single name (`str`) or a list (`list[str]`); duplicates are removed, order is preserved.
+- `None` (default) broadcasts to all subscribers registered for the type — fully backward compatible.
+- The publisher **validates before sending**: every named target must be registered and declare the message type in its `handlers`. Unknown or incapable targets raise `InvalidTargetSubscriberError` (see below) and the message is **never** written to the stream.
+- Subscribers not in the target list ACK-and-discard the message silently (no result published).
+- `ResultHandler` waits only for the targeted subscribers; an inactive-but-capable target surfaces as `ProcessStatus.TIMEOUT`.
+
+**Validation caveat** — capability is checked, not liveness. A target registered for the type but currently without a live worker passes validation and will time out downstream, matching the legacy `publish()` behavior for inactive subscribers.
+
+---
+
+#### `InvalidTargetSubscriberError`
+
+```python
+class InvalidTargetSubscriberError(GPMQError):
+    message_type: str
+    failures: list[tuple[str, str]]   # (subscriber_name, reason)
+```
+
+Raised by `publish` / `publish_async` / `send` / batch `send_message` (during `wait_all`) when a named target cannot handle the message type. `reason` is one of `"not registered"` (unknown subscriber name) or `"does not handle message type"` (registered but the type isn't in its handlers). All invalid targets are collected and reported in one exception.
 
 ---
 
@@ -247,7 +292,7 @@ Wait for results from multiple `ResultHandler` instances.
 async_batch(
     progress: Optional[GPMQProgress] = None,
     timeout: Optional[float] = None,
-    queue_size: int = 32,
+    queue_size: Optional[int] = None,
 ) -> GPMQAsyncBatchHandler
 ```
 
@@ -259,7 +304,7 @@ Create a batch handler with **sliding-window concurrency**. See [GPMQAsyncBatchH
 |------|------|---------|-------------|
 | `progress` | `GPMQProgress?` | `None` | Progress indicator |
 | `timeout` | `float?` | `None` | Total timeout for all results. `None` = wait forever. |
-| `queue_size` | `int` | `32` | Max concurrent in-flight messages |
+| `queue_size` | `int?` | `None` | Max concurrent in-flight messages. `None` = use `async_batch_queue_size` from config (default `32`). |
 
 ---
 
@@ -354,7 +399,7 @@ stop() -> None
 Gracefully stop the subscriber: stop workers, stop heartbeat thread, unregister from Redis, disconnect.
 
 **Notes**
-- Sends SIGTERM to worker processes, waits up to 30 seconds, then SIGKILL if needed.
+- Waits up to `subscriber_timeout` (from config) for each worker to exit gracefully; if still alive, sends SIGTERM and waits a brief grace period.
 
 ---
 
@@ -512,10 +557,13 @@ send_message(
     message_type: str,
     payload: dict,
     correlation_id: Optional[str] = None,
+    target_subscribers: Optional[Union[str, list[str]]] = None,
 ) -> None
 ```
 
 Queue a message for deferred sending. Messages are not published until `wait_all()` is called.
+
+`target_subscribers` is stored as-is and forwarded to `client.publish_async()` during `wait_all()`; normalization and validation happen there. See [Targeted publishing](#targeted-publishing).
 
 ---
 
@@ -726,6 +774,7 @@ class Message(BaseModel):
     publisher: str
     payload: dict
     correlation_id: Optional[str] = None
+    target_subscribers: Optional[list[str]] = None
 ```
 
 The core data unit passed through the message queue.
@@ -738,6 +787,7 @@ The core data unit passed through the message queue.
 | `publisher` | `str` | Name of the publisher |
 | `payload` | `dict` | Message payload |
 | `correlation_id` | `str?` | For tracing message chains |
+| `target_subscribers` | `list[str]?` | Optional allow-list of subscriber names (set by `target_subscribers` on the publish methods; `None` = broadcast) |
 
 ---
 
