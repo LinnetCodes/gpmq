@@ -4,6 +4,7 @@ import json
 from typing import Optional
 
 from gpmq.config import GPMQConfig
+from gpmq.exceptions import InvalidTargetSubscriberError
 from gpmq.models.message import Message
 from gpmq.models.result import ProcessResult
 from gpmq.publisher.result_handler import ResultHandler
@@ -51,8 +52,13 @@ class Publisher:
         Returns:
             Tuple of (message_id, ResultHandler)
         """
-        # Get active subscribers and filter by message type
-        relevant_subs = self._get_matching_subscribers(message.type)
+        # Resolve expected subscribers: explicit target list takes precedence
+        # over the legacy "all active matching subscribers" path.
+        if message.target_subscribers:
+            self._validate_target_subscribers(message.type, message.target_subscribers)
+            relevant_subs = list(message.target_subscribers)
+        else:
+            relevant_subs = self._get_matching_subscribers(message.type)
 
         # Publish to stream
         fields = self._message_to_fields(message)
@@ -88,6 +94,9 @@ class Publisher:
         Returns:
             Redis-generated message ID
         """
+        if message.target_subscribers:
+            self._validate_target_subscribers(message.type, message.target_subscribers)
+
         # Publish to stream
         fields = self._message_to_fields(message)
         message_id = self._redis.xadd(self._config.stream_name, fields)
@@ -152,6 +161,32 @@ class Publisher:
                 matching.append(name)
         return matching
 
+    def _validate_target_subscribers(
+        self, message_type: str, targets: list[str]
+    ) -> None:
+        """Verify every target subscriber can handle *message_type*.
+
+        Checks registration + message-type capability only, NOT liveness.
+        Collects all failures and raises once with the full list.
+
+        Args:
+            message_type: Message type to validate against.
+            targets: Subscriber names to check.
+
+        Raises:
+            InvalidTargetSubscriberError: if any target is unknown or does not
+                handle *message_type*.
+        """
+        failures: list[tuple[str, str]] = []
+        for name in targets:
+            info = self._redis.get_subscriber_info(name)
+            if info is None:
+                failures.append((name, "not registered"))
+            elif message_type not in info.get("message_types", []):
+                failures.append((name, "does not handle message type"))
+        if failures:
+            raise InvalidTargetSubscriberError(message_type, failures)
+
     @staticmethod
     def _message_to_fields(message: Message) -> dict[str, str]:
         """Convert Message to Redis Stream fields.
@@ -170,4 +205,6 @@ class Publisher:
         }
         if message.correlation_id:
             fields["correlation_id"] = message.correlation_id
+        if message.target_subscribers is not None:
+            fields["target_subscribers"] = json.dumps(message.target_subscribers)
         return fields

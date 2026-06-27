@@ -1,11 +1,13 @@
 """Tests for Publisher."""
 
+import json
 from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
 import pytest
 
 from gpmq.config import GPMQConfig
+from gpmq.exceptions import InvalidTargetSubscriberError
 from gpmq.models.message import Message
 from gpmq.models.result import ProcessStatus
 from gpmq.publisher.publisher import Publisher
@@ -276,3 +278,144 @@ class TestPublisherSendMessage:
         publisher.send_message(msg)
 
         mock_redis.subscribe.assert_not_called()
+
+
+class TestPublisherTargetSubscribersFields:
+    """Tests for target_subscribers serialization in _message_to_fields."""
+
+    def test_fields_include_target_subscribers_when_set(self):
+        """Should serialize target_subscribers as JSON when present."""
+        msg = _make_message()
+        msg.target_subscribers = ["sub-a", "sub-b"]
+
+        fields = Publisher._message_to_fields(msg)
+
+        assert json.loads(fields["target_subscribers"]) == ["sub-a", "sub-b"]
+
+    def test_fields_omit_target_subscribers_when_none(self):
+        """Should NOT include target_subscribers field when None."""
+        msg = _make_message()
+
+        fields = Publisher._message_to_fields(msg)
+
+        assert "target_subscribers" not in fields
+
+
+class TestPublisherValidateTargetSubscribers:
+    """Tests for Publisher._validate_target_subscribers()."""
+
+    def test_passes_when_all_targets_handle_type(self, publisher, mock_redis):
+        mock_redis.get_subscriber_info.side_effect = [
+            {"message_types": ["order_created"]},
+            {"message_types": ["order_created", "other"]},
+        ]
+        # Should not raise
+        publisher._validate_target_subscribers("order_created", ["sub-a", "sub-b"])
+
+    def test_raises_for_unknown_subscriber(self, publisher, mock_redis):
+        mock_redis.get_subscriber_info.return_value = None
+
+        with pytest.raises(InvalidTargetSubscriberError) as exc_info:
+            publisher._validate_target_subscribers("order_created", ["ghost-sub"])
+        assert ("ghost-sub", "not registered") in exc_info.value.failures
+
+    def test_raises_for_subscriber_not_handling_type(self, publisher, mock_redis):
+        mock_redis.get_subscriber_info.return_value = {"message_types": ["other_type"]}
+
+        with pytest.raises(InvalidTargetSubscriberError) as exc_info:
+            publisher._validate_target_subscribers("order_created", ["wrong-sub"])
+        assert ("wrong-sub", "does not handle message type") in exc_info.value.failures
+
+    def test_aggregates_multiple_failures(self, publisher, mock_redis):
+        mock_redis.get_subscriber_info.side_effect = [
+            None,  # ghost-sub: not registered
+            {"message_types": ["other"]},  # wrong-sub: wrong type
+            {"message_types": ["order_created"]},  # ok-sub: OK
+        ]
+        with pytest.raises(InvalidTargetSubscriberError) as exc_info:
+            publisher._validate_target_subscribers(
+                "order_created", ["ghost-sub", "wrong-sub", "ok-sub"]
+            )
+        failures = exc_info.value.failures
+        assert len(failures) == 2
+        assert ("ghost-sub", "not registered") in failures
+        assert ("wrong-sub", "does not handle message type") in failures
+
+
+class TestPublisherPublishMessageTargeting:
+    """Tests for target_subscribers handling in publish_message()."""
+
+    def test_publish_message_uses_target_list_as_expected(self, publisher, mock_redis):
+        """With target_subscribers set, ResultHandler should expect exactly the targets."""
+        mock_redis.xadd.return_value = "111-0"
+        mock_redis.get_subscriber_info.return_value = {
+            "message_types": ["test_type"]
+        }
+        # get_active_subscribers should NOT be consulted when targeting
+        mock_redis.get_active_subscribers.return_value = ["sub-a", "sub-b", "sub-c"]
+
+        msg = _make_message("test_type")
+        msg.target_subscribers = ["sub-a", "sub-b"]
+
+        _, handler = publisher.publish_message(msg)
+
+        mock_redis.xadd.assert_called_once()
+        # Validation queried only the two targets
+        assert mock_redis.get_subscriber_info.call_count == 2
+        assert mock_redis.get_active_subscribers.call_count == 0
+        # Fields include target_subscribers
+        fields = mock_redis.xadd.call_args[0][1]
+        assert json.loads(fields["target_subscribers"]) == ["sub-a", "sub-b"]
+
+    def test_publish_message_validates_before_xadd(self, publisher, mock_redis):
+        """Validation failure must prevent xadd entirely."""
+        mock_redis.get_subscriber_info.return_value = {"message_types": ["other_type"]}
+
+        msg = _make_message("test_type")
+        msg.target_subscribers = ["bad-sub"]
+
+        with pytest.raises(InvalidTargetSubscriberError):
+            publisher.publish_message(msg)
+
+        mock_redis.xadd.assert_not_called()
+
+    def test_publish_message_without_target_uses_legacy_path(self, publisher, mock_redis):
+        """No target_subscribers -> original _get_matching_subscribers path."""
+        mock_redis.xadd.return_value = "222-0"
+        mock_redis.get_active_subscribers.return_value = ["sub-a"]
+        mock_redis.get_subscriber_info.return_value = {"message_types": ["test_type"]}
+
+        msg = _make_message("test_type")  # target_subscribers is None
+        publisher.publish_message(msg)
+
+        assert mock_redis.get_active_subscribers.call_count == 1
+        # Fields must NOT carry target_subscribers
+        fields = mock_redis.xadd.call_args[0][1]
+        assert "target_subscribers" not in fields
+
+
+class TestPublisherSendMessageTargeting:
+    """Tests for target_subscribers validation in send_message()."""
+
+    def test_send_message_validates_before_xadd(self, publisher, mock_redis):
+        mock_redis.xadd.return_value = "333-0"
+        mock_redis.get_subscriber_info.return_value = {"message_types": ["test_type"]}
+
+        msg = _make_message("test_type")
+        msg.target_subscribers = ["sub-a"]
+
+        publisher.send_message(msg)
+
+        mock_redis.get_subscriber_info.assert_called_once_with("sub-a")
+        mock_redis.xadd.assert_called_once()
+
+    def test_send_message_validation_failure_prevents_xadd(self, publisher, mock_redis):
+        mock_redis.get_subscriber_info.return_value = None
+
+        msg = _make_message("test_type")
+        msg.target_subscribers = ["ghost-sub"]
+
+        with pytest.raises(InvalidTargetSubscriberError):
+            publisher.send_message(msg)
+
+        mock_redis.xadd.assert_not_called()
