@@ -33,6 +33,18 @@ For development:
 pip install -e ".[dev]"
 ```
 
+### Redis for tests and demos
+
+The test suite and the `examples/` demos are pre-wired to a **local** Redis instance. To run them unmodified, Redis must be reachable at:
+
+- Host: `127.0.0.1` / `localhost` — on Windows, run Redis inside WSL and connect via `localhost`
+- Port: `6379`
+- Password: `123456`
+
+> ⚠️ **Use a dedicated Redis instance for testing — never a production database.** Some tests and demos flush or delete Redis data (streams, keys, consumer groups) as part of their operation, so pointing them at a production instance will destroy data.
+
+You *can* edit the Redis settings in the `examples/` config templates and in `tests/conftest.py` to match your own instance, but this is not recommended — spinning up a throwaway dedicated Redis (e.g. via Docker) is cheaper and keeps the suite and demos runnable as-is.
+
 ## Quick Start
 
 ### 1. Write message handlers

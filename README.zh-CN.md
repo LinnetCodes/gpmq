@@ -33,6 +33,18 @@ pip install gpmq
 pip install -e ".[dev]"
 ```
 
+### 测试与 demo 用的 Redis
+
+测试套件和 `examples/` 中的 demo 都预配置为连接**本地** Redis 实例。要不做任何修改地运行通过,Redis 必须满足:
+
+- 主机:`127.0.0.1` / `localhost` —— Windows 下请在 WSL 中运行 Redis,并通过 `localhost` 连接
+- 端口:`6379`
+- 密码:`123456`
+
+> ⚠️ **务必使用一个专供测试的 Redis 实例——绝不要用生产数据库。** 某些测试和 demo 在运行过程中会清空或删除 Redis 数据(Stream、键、消费组等),指向生产实例会造成数据丢失。
+
+你*可以*修改 `examples/` 配置模板以及 `tests/conftest.py` 中的 Redis 设置来适配自己的实例,但不推荐这样做——起一个一次性的专用 Redis(例如用 Docker)成本更低,也能让测试和 demo 保持开箱即用。
+
 ## 快速开始
 
 ### 1. 编写消息处理器
