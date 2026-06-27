@@ -1,0 +1,50 @@
+# gpmq/subscribers/data_loader.yaml - 通知推送 Subscriber 配置
+
+cfg_class_name: "SubscriberConfig"
+
+# --- Subscriber 专属配置 ---
+name: "data_loader"
+workers: 4
+
+# --- 消息处理器配置 ---
+handlers:
+  - message_types:
+      - "load_user_profile"
+    handler: "gpmq.subscriber.examples.on_load_user_profile"
+  - message_types:
+      - "load_user_posts"
+      - "load_user_activities"
+    handler: "gpmq.subscriber.examples.on_load_user_data"
+  - message_types:
+      - "report_subscriber_status"
+    handler: "gpmq.subscriber.examples.on_report_status"
+  - message_types:
+      - "msg_ping"
+    handler: "gpmq.subscriber.examples.on_msg_pingpong"
+
+
+# --- message relay ---
+embedded_publisher: "gpmq.publisher.embedded"
+
+# worker context processor
+worker_context_processor: "gpmq.subscriber.examples.example_worker_context_processor"
+worker_context:
+  test_ctx_str: "This is a test context line"
+  test_ctx_list: [1, 2, 3, 4 ,5]
+  test_ctx_dict:
+    arg1: 1
+    arg2: "ok"
+    arg3: 0.008
+  test_value: 100
+
+# run_forever_method
+run_forever_method: "gpmq.subscriber.examples.example_run_forever_method"
+run_forever_method_paras:
+  arg1: 1
+  arg2: ok
+  arg3: 0.01
+
+# --- 审计与日志 ---
+enable_audit: true
+audit_db_path: "C:\temp\gpmq\db\gpmq_audit_data_loader.db"
+log_category: "data_loader"

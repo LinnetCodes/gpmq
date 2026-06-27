@@ -1,0 +1,35 @@
+# gpmq/subscribers/notifier.yaml - 订单处理 Subscriber 配置
+
+cfg_class_name: "SubscriberConfig"
+
+# --- Subscriber 专属配置 ---
+name: "notifier"
+workers: 8
+
+# --- 消息处理器配置 ---
+handlers:
+  - message_types:
+      - "notify_mentioned"
+      - "notify_liked"
+      - "notify_message"
+    handler: "gpmq.subscriber.examples.on_notify_user_interact"
+  - message_types:
+      - "notify_system_event"
+    handler: "gpmq.subscriber.examples.on_notify_system_event"
+  - message_types:
+      - "report_subscriber_status"
+    handler: "gpmq.subscriber.examples.on_report_status"
+  - message_types:
+      - "msg_pong"
+    handler: "gpmq.subscriber.examples.on_msg_pingpong"
+
+# --- message relay ---
+embedded_publisher: "gpmq.publisher.embedded"
+
+# worker context processor
+worker_context_processor: "gpmq.subscriber.examples.example_worker_context_processor"
+
+# --- 审计与日志 ---
+enable_audit: true
+audit_db_path: "C:\temp\gpmq\db\gpmq_audit_notifier.db"
+log_category: "notifier"

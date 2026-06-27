@@ -1,0 +1,13 @@
+# gpmq/publisher/embedded.yaml - Publisher 配置
+# 继承 GPMQConfig 的所有字段，增加 publisher_name 和 publish_timeout
+
+cfg_class_name: "PublisherConfig"
+
+# --- Publisher 专属配置 ---
+publisher_name: "pingpong"
+publish_timeout: 30.0
+
+# --- 审计与日志 ---
+enable_audit: false
+audit_db_path: "C:\temp\gpmq\db\embedded_publisher.db"
+log_category: "pingpong"

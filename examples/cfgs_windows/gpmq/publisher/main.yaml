@@ -1,0 +1,14 @@
+# gpmq/publisher/main.yaml - Publisher 配置
+# 继承 GPMQConfig 的所有字段，增加 publisher_name 和 publish_timeout
+
+cfg_class_name: "PublisherConfig"
+
+# --- Publisher 专属配置 ---
+publisher_name: "demo_publisher"
+publish_timeout: 30.0
+async_batch_queue_size: 32
+
+# --- 审计与日志 ---
+enable_audit: true
+audit_db_path: "C:\temp\gpmq\db\gpmq_audit_publisher.db"
+log_category: "gpmq_client"
