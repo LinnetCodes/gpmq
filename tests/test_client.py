@@ -584,3 +584,72 @@ class TestGPMQClientAsyncBatch:
             c = GPMQClient(base_config)
             batch = c.async_batch()
             assert batch._queue_size == 32
+
+
+class TestNormalizeTargets:
+    """Tests for GPMQClient._normalize_targets()."""
+
+    def test_none_returns_none(self, client):
+        assert client._normalize_targets(None) is None
+
+    def test_single_string_wrapped_in_list(self, client):
+        assert client._normalize_targets("data_loader") == ["data_loader"]
+
+    def test_list_dedupes_preserving_order(self, client):
+        result = client._normalize_targets(["a", "b", "a", "c", "b"])
+        assert result == ["a", "b", "c"]
+
+    def test_empty_string_raises(self, client):
+        with pytest.raises(ValueError):
+            client._normalize_targets("")
+
+    def test_empty_list_raises(self, client):
+        with pytest.raises(ValueError):
+            client._normalize_targets([])
+
+    def test_list_with_empty_string_raises(self, client):
+        with pytest.raises(ValueError):
+            client._normalize_targets(["a", ""])
+
+
+class TestClientPublishForwardsTarget:
+    """Tests that publish_async/send/publish forward normalized target_subscribers.
+
+    NOTE: _publisher.publish_message returns a (message_id, handler) tuple that
+    publish_async unpacks, so each test configures the return value accordingly
+    (mirrors the existing test_publish_with_correlation_id pattern).
+    """
+
+    def test_publish_async_passes_targets_to_message(self, client):
+        client._publisher.publish_message.return_value = ("mid-0", MagicMock())
+
+        client.publish_async("t", {"k": 1}, target_subscribers="sub-a")
+
+        sent_msg = client._publisher.publish_message.call_args[0][0]
+        assert sent_msg.target_subscribers == ["sub-a"]
+
+    def test_publish_async_none_means_none(self, client):
+        client._publisher.publish_message.return_value = ("mid-0", MagicMock())
+
+        client.publish_async("t", {"k": 1})
+
+        sent_msg = client._publisher.publish_message.call_args[0][0]
+        assert sent_msg.target_subscribers is None
+
+    def test_send_passes_targets_to_message(self, client):
+        client._publisher.send_message.return_value = "mid-1"
+
+        client.send("t", {"k": 1}, target_subscribers=["sub-a", "sub-b"])
+
+        sent_msg = client._publisher.send_message.call_args[0][0]
+        assert sent_msg.target_subscribers == ["sub-a", "sub-b"]
+
+    def test_publish_forwards_target_via_publish_async(self, client):
+        mock_handler = MagicMock()
+        mock_handler.wait.return_value = {}
+        client._publisher.publish_message.return_value = ("mid-0", mock_handler)
+
+        client.publish("t", {"k": 1}, target_subscribers="sub-a")
+
+        sent_msg = client._publisher.publish_message.call_args[0][0]
+        assert sent_msg.target_subscribers == ["sub-a"]

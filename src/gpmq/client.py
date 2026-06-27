@@ -3,7 +3,7 @@
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Optional, Union
 
 if TYPE_CHECKING:
     from gpmq.async_batch import GPMQAsyncBatchHandler
@@ -90,12 +90,47 @@ class GPMQClient:
         if self._audit:
             self._audit.close()
 
+    @staticmethod
+    def _normalize_targets(
+        target_subscribers: "str | list[str] | None",
+    ) -> Optional[list[str]]:
+        """Normalize the target_subscribers argument.
+
+        - None  -> None (broadcast, legacy behavior)
+        - str   -> [str]
+        - list  -> de-duplicated, order-preserving list
+        - empty str / empty list / list containing empty strings -> ValueError
+        """
+        if target_subscribers is None:
+            return None
+        if isinstance(target_subscribers, str):
+            target_subscribers = [target_subscribers]
+        if not isinstance(target_subscribers, list):
+            raise TypeError(
+                "target_subscribers must be str, list[str], or None; "
+                f"got {type(target_subscribers).__name__}"
+            )
+        seen: set[str] = set()
+        normalized: list[str] = []
+        for name in target_subscribers:
+            if not isinstance(name, str) or not name:
+                raise ValueError(
+                    "target_subscribers must contain non-empty strings"
+                )
+            if name not in seen:
+                seen.add(name)
+                normalized.append(name)
+        if not normalized:
+            raise ValueError("target_subscribers must not be empty")
+        return normalized
+
     def publish(
         self,
         message_type: str,
         payload: dict,
         correlation_id: Optional[str] = None,
         timeout: Optional[float] = None,
+        target_subscribers: Optional[Union[str, list[str]]] = None,
     ) -> dict[str, ProcessResult]:
         """Publish message and synchronously wait for results.
 
@@ -106,11 +141,16 @@ class GPMQClient:
             payload: Message payload dict
             correlation_id: Optional correlation ID for message chains
             timeout: Max seconds to wait for results. None = use config default.
+            target_subscribers: Optional subscriber name or list of names.
+                Only these subscribers will process the message; others
+                discard it. None (default) broadcasts to all matching.
 
         Returns:
             Dict mapping subscriber_name to ProcessResult
         """
-        handler = self.publish_async(message_type, payload, correlation_id)
+        handler = self.publish_async(
+            message_type, payload, correlation_id, target_subscribers
+        )
         effective_timeout = timeout or self._config.subscriber_timeout
         results = handler.wait(timeout=effective_timeout)
 
@@ -121,6 +161,7 @@ class GPMQClient:
         message_type: str,
         payload: dict,
         correlation_id: Optional[str] = None,
+        target_subscribers: Optional[Union[str, list[str]]] = None,
     ) -> ResultHandler:
         """Publish message without waiting for results.
 
@@ -128,10 +169,14 @@ class GPMQClient:
             message_type: Type of message
             payload: Message payload dict
             correlation_id: Optional correlation ID
+            target_subscribers: Optional subscriber name or list of names.
+                Only these subscribers will process the message; others
+                discard it. None (default) broadcasts to all matching.
 
         Returns:
             ResultHandler for collecting results later
         """
+        targets = self._normalize_targets(target_subscribers)
         message = Message(
             id="pending",
             type=message_type,
@@ -139,6 +184,7 @@ class GPMQClient:
             publisher=self._publisher_name,
             payload=payload,
             correlation_id=correlation_id,
+            target_subscribers=targets,
         )
         _, handler = self._publisher.publish_message(message)
         return handler
@@ -148,6 +194,7 @@ class GPMQClient:
         message_type: str,
         payload: dict,
         correlation_id: Optional[str] = None,
+        target_subscribers: Optional[Union[str, list[str]]] = None,
     ) -> str:
         """Fire-and-forget publish: send message without collecting results.
 
@@ -158,10 +205,13 @@ class GPMQClient:
             message_type: Type of message (e.g., "user_created")
             payload: Message payload dict
             correlation_id: Optional correlation ID for message chains
+            target_subscribers: Optional subscriber name or list of names.
+                None (default) broadcasts to all matching.
 
         Returns:
             Redis-generated message ID for logging/tracking
         """
+        targets = self._normalize_targets(target_subscribers)
         message = Message(
             id="pending",
             type=message_type,
@@ -169,6 +219,7 @@ class GPMQClient:
             publisher=self._publisher_name,
             payload=payload,
             correlation_id=correlation_id,
+            target_subscribers=targets,
         )
         return self._publisher.send_message(message)
 
