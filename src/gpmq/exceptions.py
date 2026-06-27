@@ -97,3 +97,21 @@ class HandlerTypeMismatchError(GPMQError):
             f"is not a subset of decorator declaration {declared_types}. "
             f"Conflicting types: {conflict_types}"
         )
+
+
+class InvalidTargetSubscriberError(GPMQError):
+    """Raised when a target subscriber cannot handle the message type.
+
+    Attributes:
+        message_type: The message type that was being published.
+        failures: List of (subscriber_name, reason) tuples. reason is one of
+            "not registered" or "does not handle message type".
+    """
+
+    def __init__(self, message_type: str, failures: list[tuple[str, str]]):
+        self.message_type = message_type
+        self.failures = failures
+        detail = ", ".join(f"{name} ({reason})" for name, reason in failures)
+        super().__init__(
+            f"Invalid target subscribers for message type '{message_type}': {detail}"
+        )

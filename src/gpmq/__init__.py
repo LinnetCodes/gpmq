@@ -33,6 +33,7 @@ from gpmq.exceptions import (
     GPMQError,
     HandlerTypeMismatchError,
     InvalidMessageError,
+    InvalidTargetSubscriberError,
     RedisConnectionError,
 )
 
@@ -81,6 +82,7 @@ __all__ = [
     "GPMQError",
     "RedisConnectionError",
     "InvalidMessageError",
+    "InvalidTargetSubscriberError",
     "DuplicateMessageTypeError",
     "HandlerTypeMismatchError",
     # Storage

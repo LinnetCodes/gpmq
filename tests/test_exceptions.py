@@ -5,6 +5,7 @@ from gpmq.exceptions import (
     GPMQError,
     HandlerTypeMismatchError,
     InvalidMessageError,
+    InvalidTargetSubscriberError,
     RedisConnectionError,
 )
 
@@ -114,3 +115,33 @@ class TestHandlerTypeMismatchError:
         )
         assert "myapp.handlers.on_user" in str(error)
         assert "order_created" in str(error)
+
+
+class TestInvalidTargetSubscriberError:
+    """Tests for InvalidTargetSubscriberError."""
+
+    def test_is_gpmq_error(self):
+        assert issubclass(InvalidTargetSubscriberError, GPMQError)
+
+    def test_attributes(self):
+        failures = [("ghost-sub", "not registered"), ("wrong-sub", "does not handle message type")]
+        error = InvalidTargetSubscriberError("order_created", failures)
+        assert error.message_type == "order_created"
+        assert error.failures == failures
+
+    def test_message_format_lists_all_failures(self):
+        error = InvalidTargetSubscriberError(
+            "order_created",
+            [("ghost-sub", "not registered"), ("wrong-sub", "does not handle message type")],
+        )
+        msg = str(error)
+        assert "order_created" in msg
+        assert "ghost-sub" in msg
+        assert "not registered" in msg
+        assert "wrong-sub" in msg
+        assert "does not handle message type" in msg
+
+    def test_message_format_single_failure(self):
+        error = InvalidTargetSubscriberError("ping", [("a", "not registered")])
+        assert "ping" in str(error)
+        assert "a" in str(error)
