@@ -120,3 +120,38 @@ class TestMessage:
         assert msg.id == "123-0"
         assert msg.type == "user_created"
         assert msg.publisher == "test_publisher"
+
+    def test_message_target_subscribers_defaults_none(self):
+        """target_subscribers should default to None when not provided."""
+        msg = Message(
+            id="123-0",
+            type="user_created",
+            timestamp=datetime(2026, 3, 25, 10, 30, 0),
+            publisher="test_publisher",
+            payload={"user_id": 123},
+        )
+        assert msg.target_subscribers is None
+
+    def test_message_target_subscribers_can_be_set(self):
+        """target_subscribers should accept a list of subscriber names."""
+        msg = Message(
+            id="123-0",
+            type="user_created",
+            timestamp=datetime(2026, 3, 25, 10, 30, 0),
+            publisher="test_publisher",
+            payload={"user_id": 123},
+            target_subscribers=["data_loader", "notifier"],
+        )
+        assert msg.target_subscribers == ["data_loader", "notifier"]
+
+    def test_message_model_dump_includes_target_subscribers(self):
+        """model_dump should include target_subscribers when set."""
+        msg = Message(
+            id="123-0",
+            type="user_created",
+            timestamp=datetime(2026, 3, 25, 10, 30, 0),
+            publisher="test_publisher",
+            payload={},
+            target_subscribers=["data_loader"],
+        )
+        assert msg.model_dump()["target_subscribers"] == ["data_loader"]

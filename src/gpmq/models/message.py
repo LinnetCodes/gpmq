@@ -17,3 +17,6 @@ class Message(BaseModel):
     correlation_id: Optional[str] = Field(
         default=None, description="For message chain tracking"
     )
+    target_subscribers: Optional[list[str]] = Field(
+        default=None, description="Optional allow-list of subscriber names"
+    )
