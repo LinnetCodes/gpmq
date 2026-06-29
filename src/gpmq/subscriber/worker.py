@@ -7,6 +7,7 @@ import json
 import time
 import traceback
 import inspect
+from datetime import datetime
 from collections.abc import Callable
 from multiprocessing import Event, Process
 from typing import Any, Optional
@@ -272,6 +273,75 @@ class Worker(Process):
 
                 self._process_message(msg_id, fields, handler)
 
+    def _handle_poison_message(self, msg_id: str, fields: dict[str, str], exc: BaseException) -> None:
+        """Handle an unparsable stream message without crashing the worker.
+
+        Called when :meth:`_process_message` fails to parse ``fields`` into a
+        :class:`Message` (bad JSON, missing/invalid timestamp, missing required
+        fields, etc.). Builds a poison-message and an EXCEPTION result using
+        ONLY the trusted ``msg_id`` and worker self-attributes (never the
+        untrusted ``fields`` as a parsed object), attempts a single ACK, and
+        publishes the result. Every step is wrapped so this method cannot
+        itself raise.
+
+        Args:
+            msg_id: Trusted Redis stream ID of the broken message.
+            fields: Raw broken fields (serialized into ``broken_msg``).
+            exc: The exception that triggered poison handling.
+        """
+        try:
+            try:
+                broken_str = json.dumps(fields, ensure_ascii=False, default=str)
+            except Exception:
+                broken_str = str(fields)
+            logger.error(
+                "Worker {} received a malformed message id={}, treating as poison: {}\n{}",
+                self._worker_id, msg_id, broken_str[:500], traceback.format_exc(),
+            )
+
+            process_result = ProcessResult(
+                message_id=msg_id,
+                status=ProcessStatus.EXCEPTION,
+                subscriber_name=self._subscriber_name,
+                processing_time=0.0,
+                error_message=f"Malformed message: {exc}",
+                error_traceback=traceback.format_exc(),
+            )
+
+            if self._audit is not None:
+                try:
+                    poison_message = Message(
+                        id=msg_id,
+                        type="__poison__",
+                        timestamp=datetime.now(),
+                        publisher="<unknown>",
+                        payload={"broken_msg": broken_str},
+                    )
+                    self._audit.save_message(poison_message)
+                    self._audit.save_result(msg_id, process_result)
+                except Exception:
+                    logger.error(
+                        "Worker {} failed to audit poison message {}\n{}",
+                        self._worker_id, msg_id, traceback.format_exc(),
+                    )
+
+            try:
+                self._redis.xack(self._stream_name, self._subscriber_name, msg_id)
+            except Exception:
+                logger.error(
+                    "Worker {} failed to ACK poison message {} (leaving it in PEL)\n{}",
+                    self._worker_id, msg_id, traceback.format_exc(),
+                )
+                return
+
+            self._publish_result(msg_id, process_result)
+        except Exception:
+            # Last-resort guard: poison handling must never crash the worker.
+            logger.error(
+                "Worker {} unexpected failure during poison handling for {}\n{}",
+                self._worker_id, msg_id, traceback.format_exc(),
+            )
+
     def _process_message(
         self,
         msg_id: str,
@@ -289,23 +359,28 @@ class Worker(Process):
         6. ``xack`` the message on the stream.
         7. ``publish`` the result on ``gpmq:result:{msg_id}:{subscriber_name}``.
         """
-        # --- 1. Parse message ---
-        payload = fields.get("payload", "{}")
-        if isinstance(payload, str):
-            payload = json.loads(payload)
+        # --- 1. Parse message (poison-safe: any failure -> _handle_poison_message) ---
+        try:
+            payload = fields.get("payload", "{}")
+            if isinstance(payload, str):
+                payload = json.loads(payload)
 
-        target_raw = fields.get("target_subscribers")
-        target_list = json.loads(target_raw) if target_raw else None
+            target_raw = fields.get("target_subscribers")
+            target_list = json.loads(target_raw) if target_raw else None
 
-        message = Message(
-            id=msg_id,
-            type=fields.get("type", ""),
-            timestamp=fields.get("timestamp", ""),
-            publisher=fields.get("publisher", ""),
-            payload=payload,
-            correlation_id=fields.get("correlation_id", None),
-            target_subscribers=target_list,
-        )
+            message = Message(
+                id=msg_id,
+                type=fields.get("type", ""),
+                timestamp=fields.get("timestamp", ""),
+                publisher=fields.get("publisher", ""),
+                payload=payload,
+                correlation_id=fields.get("correlation_id", None),
+                target_subscribers=target_list,
+            )
+        except Exception as exc:
+            self._handle_poison_message(msg_id, fields, exc)
+            return
+
         logger.debug(f"subscriber '{self._subscriber_name}' received message from '{message.publisher}', "
                      f"id: '{message.id}', type: '{message.type}', payload: '{message.payload}', "
                      f"correlation_id: '{message.correlation_id}'")

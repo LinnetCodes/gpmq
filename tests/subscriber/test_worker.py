@@ -743,3 +743,110 @@ class TestWorkerTargetSubscribersFilter:
         worker._redis.xack.assert_called_once_with(
             "gpmq:messages", "test-subscriber", "t-4"
         )
+
+
+class TestWorkerPoisonMessage:
+    """Regression for 1.1: worker must not crash on a malformed stream message."""
+
+    def _make_worker(self):
+        from gpmq.config import SubscriberConfig
+        from gpmq.subscriber.worker import Worker
+        config_dict = _make_subscriber_config(message_types=["order_created"])
+        config = SubscriberConfig(**config_dict)
+        worker = Worker(
+            subscriber_name="test-subscriber",
+            stream_name="gpmq:messages",
+            message_types=["order_created"],
+            worker_id="test-subscriber-hostA-worker-0",
+            hostname="test-host",
+            config_dict=config.model_dump(),
+        )
+        worker._redis = MagicMock()
+        worker._audit = MagicMock()
+        return worker
+
+    def test_invalid_payload_json_does_not_crash(self):
+        """Non-JSON payload -> poison handling, EXCEPTION result, ACK, no raise."""
+        worker = self._make_worker()
+        handler = MagicMock()
+        fields = {
+            "type": "order_created",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "publisher": "pub",
+            "payload": "this is not json {{{",
+        }
+        worker._process_message("bad-1", fields, handler)  # must not raise
+        handler.assert_not_called()
+        worker._redis.xack.assert_called_once_with("gpmq:messages", "test-subscriber", "bad-1")
+        worker._redis.publish.assert_called_once()
+        result = worker._redis.publish.call_args[0][1]
+        assert result["status"] == "exception"
+        worker._audit.save_message.assert_called_once()
+        poison = worker._audit.save_message.call_args[0][0]
+        assert poison.id == "bad-1"
+        assert poison.type == "__poison__"
+        assert poison.payload == {
+            "broken_msg": json.dumps(fields, ensure_ascii=False, default=str)
+        }
+
+    def test_invalid_target_subscribers_json_does_not_crash(self):
+        """target_subscribers non-JSON -> poison handling, no crash."""
+        worker = self._make_worker()
+        handler = MagicMock()
+        fields = {
+            "type": "order_created",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "publisher": "pub",
+            "payload": json.dumps({"k": 1}),
+            "target_subscribers": "not a list json",
+        }
+        worker._process_message("bad-2", fields, handler)
+        handler.assert_not_called()
+        worker._redis.xack.assert_called_once_with("gpmq:messages", "test-subscriber", "bad-2")
+        worker._redis.publish.assert_called_once()
+
+    def test_invalid_timestamp_does_not_crash(self):
+        """Invalid timestamp -> Message construction fails -> poison handling."""
+        worker = self._make_worker()
+        handler = MagicMock()
+        fields = {
+            "type": "order_created",
+            "timestamp": "",   # empty string fails datetime parse
+            "publisher": "pub",
+            "payload": json.dumps({"k": 1}),
+        }
+        worker._process_message("bad-3", fields, handler)
+        handler.assert_not_called()
+        worker._redis.xack.assert_called_once_with("gpmq:messages", "test-subscriber", "bad-3")
+
+    def test_missing_required_fields_does_not_crash(self):
+        """Missing type/publisher/timestamp -> Message construction fails -> poison."""
+        worker = self._make_worker()
+        handler = MagicMock()
+        fields = {"payload": json.dumps({"k": 1})}  # no type/publisher/timestamp
+        worker._process_message("bad-4", fields, handler)
+        handler.assert_not_called()
+        worker._redis.xack.assert_called_once_with("gpmq:messages", "test-subscriber", "bad-4")
+
+    def test_ack_failure_does_not_crash_worker(self):
+        """If xack raises during poison handling, worker still does not crash."""
+        worker = self._make_worker()
+        worker._redis.xack.side_effect = RuntimeError("redis down")
+        handler = MagicMock()
+        fields = {"type": "order_created", "timestamp": datetime.now(timezone.utc).isoformat(),
+                  "publisher": "pub", "payload": "not json"}
+        worker._process_message("bad-5", fields, handler)  # must not raise
+        worker._redis.xack.assert_called_once()
+        # publish NOT called because ACK failed and we returned early
+        worker._redis.publish.assert_not_called()
+
+    def test_no_audit_still_publishes_exception(self):
+        """When audit is disabled, poison branch still publishes EXCEPTION + ACKs."""
+        worker = self._make_worker()
+        worker._audit = None
+        handler = MagicMock()
+        fields = {"type": "order_created", "timestamp": datetime.now(timezone.utc).isoformat(),
+                  "publisher": "pub", "payload": "not json"}
+        worker._process_message("bad-6", fields, handler)
+        worker._redis.xack.assert_called_once()
+        worker._redis.publish.assert_called_once()
