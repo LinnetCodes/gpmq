@@ -59,7 +59,7 @@ def message_handler(message_types: list[str]) -> Callable:
             if not (first.annotation == "Message" or first.annotation is Message):
                 raise TypeError(
                     f"parameter '{first.name}' of message handler '{func.__name__}' must be of "
-                    f"Message type, suggested message handler signature: \n"
+                    f"Message type, got {first.annotation!r}, suggested message handler signature: \n"
                     f"'msg_handler_func(msg: Message, context: Optional[dict[str, Any]]) -> Any', "
                     f"or\n'msg_handler_func(msg: Message) -> Any'"
                 )
@@ -81,7 +81,7 @@ def message_handler(message_types: list[str]) -> Callable:
                 ):
                     raise TypeError(
                         f"parameter '{second.name}' of message handler '{func.__name__}' must be of "
-                        f"type 'Optional[dict[str, Any]]', suggested message handler signature: \n"
+                        f"type 'Optional[dict[str, Any]]', got {second.annotation!r}, suggested message handler signature: \n"
                         f"'msg_handler_func(msg: Message, context: Optional[dict[str, Any]]) -> Any', "
                         f"or\n'msg_handler_func(msg: Message) -> Any'"
                     )

@@ -420,3 +420,13 @@ class TestHandlerAnnotationTolerance:
             @message_handler(message_types=["bad3"])
             def handler(msg: int):
                 return None
+
+    def test_annotation_error_echoes_offending_value(self):
+        """Annotation-mismatch errors should echo the offending annotation (debuggability)."""
+        import pytest
+        with pytest.raises(TypeError, match=r"<class 'int'>"):
+            # real int annotation injected so the message contains the repr
+            def raw_handler(msg):  # noqa: ANN001
+                return None
+            raw_handler.__annotations__ = {"msg": int}
+            message_handler(message_types=["echo"])(raw_handler)
