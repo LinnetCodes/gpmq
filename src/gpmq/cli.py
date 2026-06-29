@@ -284,20 +284,11 @@ def audit_query(
             end = _parse_iso_datetime(to_time)
             results = store.query_by_time_range(start, end, limit=limit)
         else:
-            # Default: query recent messages by time range (last 24h)
-            end = datetime.now()
-            start_dt = from_time if from_time else None
-            end_dt = to_time if to_time else None
-            if start_dt and end_dt:
-                start = _parse_iso_datetime(start_dt)
-                end = _parse_iso_datetime(end_dt)
-                results = store.query_by_time_range(start, end, limit=limit)
-            else:
-                # Fallback: no filters, get recent
-                click.echo(
-                    "No filters specified. Use --type, --status, --correlation-id, or --from/--to."
-                )
-                return
+            # Fallback: no filters, get recent
+            click.echo(
+                "No filters specified. Use --type, --status, --correlation-id, or --from/--to."
+            )
+            return
 
         click.echo(_format_output(results, fmt))
 
