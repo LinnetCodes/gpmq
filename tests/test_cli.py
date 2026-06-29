@@ -19,13 +19,12 @@ def test_format_output_json():
     assert parsed == data
 
 
-def test_format_output_yaml():
-    """_format_output should format data as YAML (using json.dumps)."""
+def test_format_output_yaml_rejected():
+    """_format_output must reject the 'yaml' format (option was removed; never produced real YAML)."""
+    import pytest
     data = [{"id": "1", "type": "test"}]
-    result = _format_output(data, "yaml")
-    # yaml format uses json.dumps for now
-    parsed = json.loads(result)
-    assert parsed == data
+    with pytest.raises(ValueError):
+        _format_output(data, "yaml")
 
 
 def test_format_output_table_with_records():

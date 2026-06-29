@@ -84,7 +84,7 @@ gpmq audit query COMPONENT_NAME [OPTIONS]
 | `--from` | 否 | 起始时间，ISO 格式，如 `2026-01-01T00:00:00` |
 | `--to` | 否 | 结束时间，ISO 格式 |
 | `--limit` | `100` | 最大返回条数 |
-| `--format` | `table` | 输出格式：`json` / `yaml` / `table` |
+| `--format` | `table` | 输出格式：`json` / `table` |
 | `--config` | 否 | 配置文件夹路径 |
 
 执行时会显示当前操作的 audit store 文件路径。如果该组件的 `enable_audit` 为 `false`，会提示 audit 已禁用并退出。

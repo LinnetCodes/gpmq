@@ -61,12 +61,12 @@ def _format_output(data: Any, fmt: str) -> str:
 
     Args:
         data: Data to format (list of dicts or dict).
-        fmt: Output format - "json", "yaml", or "table".
+        fmt: Output format - "json" or "table".
 
     Returns:
         Formatted string.
     """
-    if fmt in ("json", "yaml"):
+    if fmt == "json":
         return json.dumps(data, indent=2, default=str)
 
     if fmt == "table":
@@ -110,7 +110,7 @@ def _format_output(data: Any, fmt: str) -> str:
 
         return ""
 
-    return str(data)
+    raise ValueError(f"Unsupported output format: {fmt!r} (expected 'json' or 'table')")
 
 
 def _resolve_audit_config(cfg_path: str) -> tuple[str, bool]:
@@ -235,7 +235,7 @@ def audit(ctx: click.Context) -> None:
 @click.option(
     "--format",
     "fmt",
-    type=click.Choice(["json", "yaml", "table"]),
+    type=click.Choice(["json", "table"]),
     default="table",
     help="Output format.",
 )
@@ -314,7 +314,7 @@ def audit_query(
 @click.option(
     "--format",
     "fmt",
-    type=click.Choice(["json", "yaml", "table"]),
+    type=click.Choice(["json", "table"]),
     default="table",
     help="Output format.",
 )
@@ -347,7 +347,7 @@ def audit_cleanup(
 @click.option(
     "--format",
     "fmt",
-    type=click.Choice(["json", "yaml", "table"]),
+    type=click.Choice(["json", "table"]),
     default="table",
     help="Output format.",
 )
@@ -385,7 +385,7 @@ def clear(ctx: click.Context, stream: str) -> None:
 @click.option(
     "--format",
     "fmt",
-    type=click.Choice(["json", "yaml", "table"]),
+    type=click.Choice(["json", "table"]),
     default="table",
     help="Output format.",
 )

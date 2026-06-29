@@ -84,7 +84,7 @@ gpmq audit query COMPONENT_NAME [OPTIONS]
 | `--from` | No | Start time, ISO format, e.g. `2026-01-01T00:00:00` |
 | `--to` | No | End time, ISO format |
 | `--limit` | `100` | Maximum number of records to return |
-| `--format` | `table` | Output format: `json` / `yaml` / `table` |
+| `--format` | `table` | Output format: `json` / `table` |
 | `--config` | No | Configuration folder path |
 
 When executed, the audit store file path for the current operation is displayed. If the component has `enable_audit: false`, a message indicating audit is disabled is shown and the command exits.
