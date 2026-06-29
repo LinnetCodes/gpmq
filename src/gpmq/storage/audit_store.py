@@ -139,7 +139,16 @@ class AuditStore:
             self._conn.commit()
 
     def save_result(self, message_id: str, result: ProcessResult) -> None:
-        """Save processing result.
+        """Save processing result with status-priority semantics.
+
+        Priority rules for an existing row with the same
+        (message_id, subscriber_name):
+
+        * existing = TIMEOUT, new = real (SUCCESS/FAILURE/EXCEPTION)
+          -> overwrite (real replaces the placeholder).
+        * existing = real, new = real -> raise (genuine collision).
+        * existing = real, new = TIMEOUT (late) -> silently ignore.
+        * no existing row -> insert.
 
         Args:
             message_id: Associated message ID
@@ -147,21 +156,59 @@ class AuditStore:
 
         Raises:
             sqlite3.Error: If save fails (fail fast)
+            RuntimeError: If a real result collides with an existing real result
         """
         with self._lock:
             if self._conn is None:
                 return
             cursor = self._conn.cursor()
+            existing = cursor.execute(
+                "SELECT status FROM results WHERE message_id = ? AND subscriber_name = ?",
+                (message_id, result.subscriber_name),
+            ).fetchone()
+            new_status = result.status.value
+            real_statuses = {
+                ProcessStatus.SUCCESS.value,
+                ProcessStatus.FAILURE.value,
+                ProcessStatus.EXCEPTION.value,
+            }
+            if existing is not None:
+                existing_status = existing["status"]
+                if existing_status == ProcessStatus.TIMEOUT.value and new_status in real_statuses:
+                    action = "overwrite"
+                elif existing_status in real_statuses and new_status in real_statuses:
+                    raise RuntimeError(
+                        f"Conflicting real results for message_id={message_id!r}, "
+                        f"subscriber={result.subscriber_name!r}: "
+                        f"existing={existing_status!r}, new={new_status!r}"
+                    )
+                elif existing_status in real_statuses and new_status == ProcessStatus.TIMEOUT.value:
+                    # Late TIMEOUT after a real result already stored — ignore.
+                    return
+                else:
+                    # Any other combination (incl. TIMEOUT/TIMEOUT) — ignore.
+                    return
+            else:
+                action = "insert"
+
+            if action == "overwrite":
+                cursor.execute(
+                    """
+                    DELETE FROM results
+                    WHERE message_id = ? AND subscriber_name = ?
+                    """,
+                    (message_id, result.subscriber_name),
+                )
             cursor.execute(
                 """
-                INSERT OR IGNORE INTO results (message_id, subscriber_name, status, processing_time,
+                INSERT INTO results (message_id, subscriber_name, status, processing_time,
                                   data, error_message, error_traceback, timeout_seconds, created_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
                 (
                     message_id,
                     result.subscriber_name,
-                    result.status.value,
+                    new_status,
                     result.processing_time,
                     json.dumps(result.data) if result.data else None,
                     result.error_message,

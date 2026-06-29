@@ -343,6 +343,72 @@ def test_result_with_error_details(audit_store):
     assert "Line 1" in results[0]["error_traceback"]
 
 
+def test_save_result_real_overwrites_timeout(audit_store):
+    """1.2 case 1: a real result (SUCCESS) arriving after a TIMEOUT row overwrites it."""
+    from gpmq.models.result import ProcessResult, ProcessStatus
+
+    audit_store.save_result("p1", ProcessResult(
+        message_id="p1", status=ProcessStatus.TIMEOUT,
+        subscriber_name="sub", processing_time=5.0, timeout_seconds=5.0,
+    ))
+    audit_store.save_result("p1", ProcessResult(
+        message_id="p1", status=ProcessStatus.SUCCESS,
+        subscriber_name="sub", processing_time=0.2,
+    ))
+
+    assert [r["status"] for r in audit_store.query_by_status(ProcessStatus.SUCCESS)] == ["success"]
+    assert [r["status"] for r in audit_store.query_by_status(ProcessStatus.TIMEOUT)] == []
+
+
+def test_save_result_timeout_after_real_is_ignored(audit_store):
+    """1.2 case 3: a late TIMEOUT arriving after a real result is silently ignored."""
+    from gpmq.models.result import ProcessResult, ProcessStatus
+
+    audit_store.save_result("p2", ProcessResult(
+        message_id="p2", status=ProcessStatus.SUCCESS,
+        subscriber_name="sub", processing_time=0.2,
+    ))
+    audit_store.save_result("p2", ProcessResult(
+        message_id="p2", status=ProcessStatus.TIMEOUT,
+        subscriber_name="sub", processing_time=5.0, timeout_seconds=5.0,
+    ))
+
+    assert [r["status"] for r in audit_store.query_by_status(ProcessStatus.SUCCESS)] == ["success"]
+    assert [r["status"] for r in audit_store.query_by_status(ProcessStatus.TIMEOUT)] == []
+
+
+def test_save_result_real_vs_real_raises(audit_store):
+    """1.2 case 2: two real results for same (msg, subscriber) raise."""
+    import pytest
+    from gpmq.models.result import ProcessResult, ProcessStatus
+
+    audit_store.save_result("p3", ProcessResult(
+        message_id="p3", status=ProcessStatus.SUCCESS,
+        subscriber_name="sub", processing_time=0.2,
+    ))
+    with pytest.raises(Exception):
+        audit_store.save_result("p3", ProcessResult(
+            message_id="p3", status=ProcessStatus.FAILURE,
+            subscriber_name="sub", processing_time=0.3,
+        ))
+
+
+def test_save_result_exception_overwrites_timeout(audit_store):
+    """1.2 + 1.1 linkage: an EXCEPTION result (poison-message) overwrites a TIMEOUT."""
+    from gpmq.models.result import ProcessResult, ProcessStatus
+
+    audit_store.save_result("p4", ProcessResult(
+        message_id="p4", status=ProcessStatus.TIMEOUT,
+        subscriber_name="sub", processing_time=5.0, timeout_seconds=5.0,
+    ))
+    audit_store.save_result("p4", ProcessResult(
+        message_id="p4", status=ProcessStatus.EXCEPTION,
+        subscriber_name="sub", processing_time=0.0, error_message="poison",
+    ))
+    assert [r["status"] for r in audit_store.query_by_status(ProcessStatus.EXCEPTION)] == ["exception"]
+    assert [r["status"] for r in audit_store.query_by_status(ProcessStatus.TIMEOUT)] == []
+
+
 def test_save_message_dedup_same_id(audit_store):
     """save_message should not duplicate when called twice with same message id."""
     from datetime import datetime, timezone
@@ -363,17 +429,22 @@ def test_save_message_dedup_same_id(audit_store):
 
 
 def test_save_result_dedup_same_message_and_subscriber(audit_store):
-    """save_result should not duplicate for same message_id + subscriber_name."""
+    """save_result should not duplicate for same message_id + subscriber_name.
+
+    Under the 1.2 priority rule, a second real result would raise (real-vs-real
+    collision). The 'no duplicate row' intent is preserved by sending a late
+    TIMEOUT after the real result, which is silently ignored.
+    """
     from gpmq.models.result import ProcessStatus, ProcessResult
 
-    result = ProcessResult(
-        message_id="msg-1",
-        status=ProcessStatus.SUCCESS,
-        subscriber_name="sub_a",
-        processing_time=0.5,
-    )
-    audit_store.save_result("msg-1", result)
-    audit_store.save_result("msg-1", result)  # second call should be ignored
+    audit_store.save_result("msg-1", ProcessResult(
+        message_id="msg-1", status=ProcessStatus.SUCCESS,
+        subscriber_name="sub_a", processing_time=0.5,
+    ))
+    audit_store.save_result("msg-1", ProcessResult(
+        message_id="msg-1", status=ProcessStatus.TIMEOUT,
+        subscriber_name="sub_a", processing_time=5.0, timeout_seconds=5.0,
+    ))  # ignored — no dup row
 
     stats = audit_store.stats()
     assert stats["total_results"] == 1
@@ -474,16 +545,16 @@ def test_concurrent_mixed_read_write(audit_store):
 
     errors: list[Exception] = []
 
-    def writer() -> None:
+    def writer(writer_id: int) -> None:
         try:
             for i in range(20):
                 result = ProcessResult(
-                    message_id=f"rw-msg-{i}",
+                    message_id=f"rw-{writer_id}-msg-{i}",
                     status=ProcessStatus.SUCCESS,
-                    subscriber_name=f"sub-{i}",
+                    subscriber_name=f"sub-{writer_id}-{i}",
                     processing_time=0.01,
                 )
-                audit_store.save_result(f"rw-msg-{i}", result)
+                audit_store.save_result(f"rw-{writer_id}-msg-{i}", result)
         except Exception as e:
             errors.append(e)
 
@@ -497,8 +568,8 @@ def test_concurrent_mixed_read_write(audit_store):
 
     with ThreadPoolExecutor(max_workers=4) as executor:
         futures = []
-        for _ in range(2):
-            futures.append(executor.submit(writer))
+        for wid in range(2):
+            futures.append(executor.submit(writer, wid))
             futures.append(executor.submit(reader))
         for f in futures:
             f.result()
