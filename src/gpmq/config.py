@@ -44,10 +44,8 @@ class GPMQConfig(GPConfig):
         redis_max_retries: Maximum connection retry attempts
         redis_retry_delay: Base delay for retry in seconds
         stream_name: Name of the Redis Stream
-        enable_registry: Whether to enable subscriber registry
         heartbeat_interval: Heartbeat interval in seconds
         registry_key_prefix: Prefix for registry keys in Redis
-        subscriber_timeout: Timeout for individual subscriber in seconds
         audit_db_path: Path to SQLite audit database
         enable_audit: Enable or disable audit store
         log_category: Log category for gpclog
@@ -72,17 +70,11 @@ class GPMQConfig(GPConfig):
     stream_name: str = Field(default="gpmq:messages", description="Redis Stream name")
 
     # Registry
-    enable_registry: bool = Field(
-        default=True, description="Enable subscriber registry"
-    )
     heartbeat_interval: int = Field(
         default=10, ge=1, description="Heartbeat interval in seconds"
     )
     registry_key_prefix: str = Field(
         default="gpmq:", description="Redis key prefix for registry"
-    )
-    subscriber_timeout: float = Field(
-        default=60.0, ge=1.0, description="Subscriber processing timeout in seconds"
     )
 
     @field_validator("registry_key_prefix")
@@ -135,6 +127,7 @@ class SubscriberConfig(GPMQConfig):
         name: Unique name for this subscriber (also consumer group name)
         handlers: List of handler configurations
         workers: Number of worker processes
+        subscriber_timeout: Timeout for individual subscriber in seconds
         embedded_publisher: publisher config path for an embedded publisher in a subscriber that do message relay
         worker_context_processor: Import path to a worker context processor function
         worker_context: Custom worker context data dict
@@ -150,6 +143,9 @@ class SubscriberConfig(GPMQConfig):
         min_length=1, description="Handler configurations"
     )
     workers: int = Field(default=1, ge=1, description="Number of worker processes")
+    subscriber_timeout: float = Field(
+        default=60.0, ge=1.0, description="Subscriber processing timeout in seconds"
+    )
     embedded_publisher: str | None = Field(
         default=None, description="Publisher config path for embedded publisher in worker context"
     )

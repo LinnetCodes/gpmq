@@ -22,7 +22,7 @@ def config() -> PublisherConfig:
     return PublisherConfig(
         redis_host="localhost",
         publisher_name="test_publisher",
-        subscriber_timeout=30.0,
+        publish_timeout=30.0,
     )
 
 
@@ -200,7 +200,7 @@ class TestGPMQClientPublish:
         assert results["sub-a"].status == ProcessStatus.SUCCESS
 
     def test_publish_uses_config_timeout(self, client):
-        """Should use config subscriber_timeout when no timeout given."""
+        """Should use config publish_timeout when no timeout given."""
         mock_handler = MagicMock(spec=ResultHandler)
         mock_handler.wait.return_value = {}
         client._publisher.publish_message.return_value = ("msg-1", mock_handler)

@@ -16,10 +16,8 @@ redis_retry_delay: 1.0
 stream_name: "gpmq:messages"
 
 # --- 注册中心 ---
-enable_registry: true
 heartbeat_interval: 10
 registry_key_prefix: "gpmq"
-subscriber_timeout: 60.0
 
 # --- 审计与日志 ---
 audit_db_path: "C:\\temp\\gpmq\\db\\gpmq_audit.db"

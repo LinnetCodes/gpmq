@@ -324,7 +324,7 @@ Returns the audit store instance, or `None` if audit is disabled (`enable_audit:
 get_consumer_group_workers(subscriber_name: str) -> ConsumerGroupWorkers
 ```
 
-Query all workers registered under a consumer group, including idle ones. Workers whose heartbeat exceeds `subscriber_timeout` are marked as `"stale"`.
+Query all workers registered under a consumer group, including idle ones. Workers whose heartbeat exceeds `heartbeat_interval * 3` are marked as `"stale"`.
 
 **Parameters**
 
@@ -336,7 +336,7 @@ Query all workers registered under a consumer group, including idle ones. Worker
 
 **Notes**
 - Workers that crashed without graceful shutdown remain in the registry. They appear with `status: "stale"`.
-- Heartbeat timeout is determined by `subscriber_timeout` in config.
+- Heartbeat timeout is determined by `heartbeat_interval * 3` (derived from the shared `heartbeat_interval`).
 
 **Example**
 

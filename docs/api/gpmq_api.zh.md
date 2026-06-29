@@ -324,7 +324,7 @@ get_audit_store() -> Optional[AuditStore]
 get_consumer_group_workers(subscriber_name: str) -> ConsumerGroupWorkers
 ```
 
-查询消费组中所有已注册的 Worker，包括空闲 Worker。心跳时间超过 `subscriber_timeout` 的 Worker 会被标记为 `"stale"`。
+查询消费组中所有已注册的 Worker，包括空闲 Worker。心跳时间超过 `heartbeat_interval * 3` 的 Worker 会被标记为 `"stale"`。
 
 **参数**
 
@@ -336,7 +336,7 @@ get_consumer_group_workers(subscriber_name: str) -> ConsumerGroupWorkers
 
 **说明**
 - 未正常关闭的 Worker（如崩溃）仍会保留在注册表中，状态显示为 `"stale"`。
-- 心跳超时阈值由配置中的 `subscriber_timeout` 决定。
+- 心跳超时阈值由 `heartbeat_interval * 3` 决定（派生自共享的 `heartbeat_interval`）。
 
 **示例**
 

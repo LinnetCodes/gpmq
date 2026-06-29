@@ -46,10 +46,8 @@ class TestGPMQConfig:
         assert config.redis_max_retries == 3
         assert config.redis_retry_delay == 1.0
         assert config.stream_name == "gpmq:messages"
-        assert config.enable_registry is True
         assert config.heartbeat_interval == 10
         assert config.registry_key_prefix == "gpmq:"
-        assert config.subscriber_timeout == 60.0
         assert config.audit_db_path == "gpmq_audit.db"
         assert config.log_category == "gpmq"
 
@@ -147,6 +145,17 @@ class TestSubscriberConfig:
         assert config.name == "my_subscriber"
         assert len(config.handlers) == 1
         assert config.workers == 1
+
+    def test_subscriber_timeout_lives_on_subscriber_config(self):
+        """2.2: subscriber_timeout belongs to SubscriberConfig, not the base."""
+        config = SubscriberConfig(
+            name="test-sub",
+            handlers=[HandlerConfig(message_types=["t"], handler="m.f")],
+        )
+        assert config.subscriber_timeout == 60.0  # default
+        base = GPMQConfig()
+        assert not hasattr(base, "subscriber_timeout")
+        assert not hasattr(base, "enable_registry")
 
     def test_get_message_types(self):
         """SubscriberConfig.get_message_types should aggregate and deduplicate types."""

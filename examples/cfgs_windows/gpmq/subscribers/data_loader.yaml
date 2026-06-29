@@ -6,6 +6,9 @@ cfg_class_name: "SubscriberConfig"
 name: "data_loader"
 workers: 4
 
+# subscriber processing timeout (seconds)
+subscriber_timeout: 60.0
+
 # --- 消息处理器配置 ---
 handlers:
   - message_types:

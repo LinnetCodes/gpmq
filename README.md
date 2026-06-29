@@ -101,7 +101,6 @@ redis_port: 6379
 redis_password: ""
 stream_name: "gpmq:messages"
 
-enable_registry: true
 heartbeat_interval: 10
 ```
 
@@ -287,10 +286,8 @@ Shared settings for all components. Loaded as the base layer for both publishers
 | `redis_max_retries` | int | `3` | Max connection retry attempts |
 | `redis_retry_delay` | float | `1.0` | Base retry delay in seconds |
 | `stream_name` | str | `"gpmq:messages"` | Redis Stream name |
-| `enable_registry` | bool | `True` | Enable subscriber registry |
 | `heartbeat_interval` | int | `10` | Heartbeat interval in seconds |
 | `registry_key_prefix` | str | `"gpmq:"` | Redis key prefix (auto-appends `:`) |
-| `subscriber_timeout` | float | `60.0` | Per-subscriber processing timeout (seconds) |
 | `audit_db_path` | str | `"gpmq_audit.db"` | SQLite audit database path |
 | `enable_audit` | bool | `True` | Enable audit logging |
 | `log_category` | str | `"gpmq"` | Log category for gpclog |
@@ -325,6 +322,7 @@ Extends `GPMQConfig`. Config file must include `cfg_class_name: "SubscriberConfi
 | `name` | str | *(required)* | Subscriber name (also consumer group name) |
 | `handlers` | list[HandlerConfig] | *(required)* | Message handler configurations |
 | `workers` | int | `1` | Number of worker processes |
+| `subscriber_timeout` | float | `60.0` | Per-subscriber processing timeout (seconds) |
 | `embedded_publisher` | str \| null | `null` | Publisher config path for message relay |
 | `worker_context_processor` | str \| null | `null` | Import path to worker context init function |
 | `worker_context` | dict \| null | `null` | Custom data dict injected into every worker's context |

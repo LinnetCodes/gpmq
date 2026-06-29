@@ -101,7 +101,6 @@ redis_port: 6379
 redis_password: ""
 stream_name: "gpmq:messages"
 
-enable_registry: true
 heartbeat_interval: 10
 ```
 
@@ -287,10 +286,8 @@ GPMQ 采用两层配置机制：**公共配置**（`gpmq/common.yaml`）提供�
 | `redis_max_retries` | int | `3` | 最大连接重试次数 |
 | `redis_retry_delay` | float | `1.0` | 重试基础延迟（秒） |
 | `stream_name` | str | `"gpmq:messages"` | Redis Stream 名称 |
-| `enable_registry` | bool | `True` | 启用订阅者注册中心 |
 | `heartbeat_interval` | int | `10` | 心跳间隔（秒） |
-| `registry_key_prefix` | str | `"gpmq:"` | Redis 键前缀（自动补 `:`） |
-| `subscriber_timeout` | float | `60.0` | 单个订阅者处理超时（秒） |
+| `registry_key_prefix` | str | `"gpmq:"` | Redis 键前缀（自动追加 `:`） |
 | `audit_db_path` | str | `"gpmq_audit.db"` | SQLite 审计数据库路径 |
 | `enable_audit` | bool | `True` | 启用审计日志 |
 | `log_category` | str | `"gpmq"` | gpclog 日志分类 |
@@ -325,6 +322,7 @@ log_category: "my_app_publisher"
 | `name` | str | *（必填）* | 订阅者名称（同时作为 Consumer Group 名称） |
 | `handlers` | list[HandlerConfig] | *（必填）* | 消息处理器配置列表 |
 | `workers` | int | `1` | Worker 进程数量 |
+| `subscriber_timeout` | float | `60.0` | 单个订阅者处理超时（秒） |
 | `embedded_publisher` | str \| null | `null` | 内嵌 Publisher 配置路径（用于消息转发） |
 | `worker_context_processor` | str \| null | `null` | Worker 上下文初始化函数的导入路径 |
 | `worker_context` | dict \| null | `null` | 注入到每个 Worker 上下文的自定义数据字典 |

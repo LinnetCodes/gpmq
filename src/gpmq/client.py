@@ -151,7 +151,7 @@ class GPMQClient:
         handler = self.publish_async(
             message_type, payload, correlation_id, target_subscribers
         )
-        effective_timeout = timeout or self._config.subscriber_timeout
+        effective_timeout = timeout or self._config.publish_timeout
         results = handler.wait(timeout=effective_timeout)
 
         return results
@@ -238,7 +238,7 @@ class GPMQClient:
         Returns:
             List of result dicts, one per handler
         """
-        effective_timeout = timeout or self._config.subscriber_timeout
+        effective_timeout = timeout or self._config.publish_timeout
         with ThreadPoolExecutor(max_workers=len(handlers)) as executor:
             futures = [
                 executor.submit(
@@ -263,7 +263,7 @@ class GPMQClient:
         """Query all workers registered under a consumer group.
 
         Includes idle workers. Workers whose heartbeat exceeds
-        ``subscriber_timeout`` are marked as ``"stale"``.
+        ``heartbeat_interval * 3`` are marked as ``"stale"``.
 
         Args:
             subscriber_name: Name of the subscriber / consumer group.
@@ -274,7 +274,7 @@ class GPMQClient:
         from gpmq.models.worker_info import WorkerInfo, ConsumerGroupWorkers
 
         raw_workers = self._redis.get_consumer_group_workers(subscriber_name)
-        timeout = self._config.subscriber_timeout
+        timeout = self._config.heartbeat_interval * 3
         now = time.time()
 
         workers = []
