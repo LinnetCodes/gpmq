@@ -431,37 +431,32 @@ class TestGPMQAsyncBatchHandlerSlidingWindow:
         assert client.publish_async.call_count == 1
 
     def test_wait_all_publish_async_failure_during_refill(self):
-        """If publish_async fails during refill, batch should continue."""
+        """If publish_async fails during refill, batch must abort (fail-fast)."""
+        import pytest
         client = _make_mock_client()
         rh1 = MagicMock(spec=ResultHandler)
         rh2 = MagicMock(spec=ResultHandler)
-        rh3 = MagicMock(spec=ResultHandler)
-        # rh1, rh2 succeed on initial send; rh3 fails during refill
-        client.publish_async.side_effect = [rh1, rh2, RuntimeError("Redis down"), rh3]
+        # rh1, rh2 succeed on initial send; refill of t2 fails.
+        boom = RuntimeError("Redis down")
+        client.publish_async.side_effect = [rh1, rh2, boom]
 
-        # Round 1: both initial succeed -> refill 2 more (msg-2 fails, msg-3 succeeds)
+        # Round 1: both initial succeed -> refill t2 (which raises)
         result_r1 = [
             {"sub-a": _make_success_result("sub-a", "msg-0")},
             {"sub-b": _make_success_result("sub-b", "msg-1")},
         ]
-        # Round 2: only rh3 active, completes
-        result_r2 = [
-            {"sub-c": _make_success_result("sub-c", "msg-3")},
-        ]
-        client.wait_all.side_effect = [result_r1, result_r2]
+        client.wait_all.side_effect = [result_r1]
 
         batch = GPMQAsyncBatchHandler(client, queue_size=2)
         batch.send_message("t0", {"id": 0})
         batch.send_message("t1", {"id": 1})
-        batch.send_message("t2", {"id": 2})  # will fail to publish
-        batch.send_message("t3", {"id": 3})
-        results = batch.wait_all()
+        batch.send_message("t2", {"id": 2})  # will fail to publish (refill)
 
-        assert len(results) == 4
-        assert results[0]["sub-a"].status == ProcessStatus.SUCCESS
-        assert results[1]["sub-b"].status == ProcessStatus.SUCCESS
-        assert results[2] == {}  # publish_async failed -> empty result
-        assert results[3]["sub-c"].status == ProcessStatus.SUCCESS
+        with pytest.raises(RuntimeError) as exc_info:
+            batch.wait_all()
+
+        assert exc_info.value.__cause__ is boom
+        assert "t2" in str(exc_info.value)
 
 
 class TestGPMQAsyncBatchHandlerGetResult:
@@ -659,3 +654,71 @@ class TestGPMQAsyncBatchHandlerForwardsTarget:
         # Third publish_async call (index 2) is the refill of t2 and carries "sub-x"
         refill_call = client.publish_async.call_args_list[2]
         assert refill_call[0] == ("t2", {"id": 2}, None, "sub-x")
+
+
+class TestGPMQAsyncBatchHandlerPublishFailure:
+    """Regression for 1.4: publish_async failure must abort the batch with a
+    meaningful exception, not silently drop (return {}) or KeyError."""
+
+    def test_refill_publish_failure_aborts_with_meaningful_exception(self):
+        """A publish_async failure in the refill path must raise an exception
+        carrying the failing index + type/payload + the original cause."""
+        import pytest
+        client = _make_mock_client()
+        rh1 = MagicMock(spec=ResultHandler)
+        boom = RuntimeError("redis xadd failed")
+        client.publish_async.side_effect = [rh1, boom]
+
+        client.wait_all.side_effect = [
+            [{"sub-a": _make_success_result("sub-a", "msg-1")}],
+        ]
+
+        handler = GPMQAsyncBatchHandler(client, queue_size=1)
+        handler.send_message("type_a", {"id": 1})
+        handler.send_message("type_b", {"id": 2})
+
+        with pytest.raises(Exception) as exc_info:
+            handler.wait_all()
+        msg = str(exc_info.value)
+        assert "type_b" in msg or "type_a" in msg or "id" in msg
+        assert exc_info.value.__cause__ is boom or exc_info.value.__context__ is boom
+
+    def test_initial_publish_failure_aborts(self):
+        """A publish_async failure in the INITIAL batch must also abort (raw propagation OK)."""
+        import pytest
+        client = _make_mock_client()
+        boom = ValueError("bad payload")
+        client.publish_async.side_effect = boom
+
+        handler = GPMQAsyncBatchHandler(client, queue_size=4)
+        handler.send_message("type_a", {"id": 1})
+
+        with pytest.raises(Exception) as exc_info:
+            handler.wait_all()
+        assert exc_info.value is boom or exc_info.value.__cause__ is boom or exc_info.value.__context__ is boom
+
+    def test_short_timeout_does_not_keyerror(self):
+        """A short batch timeout must not raise KeyError from the final assembly."""
+        from unittest.mock import patch
+        client = _make_mock_client()
+        rh1 = MagicMock(spec=ResultHandler)
+        client.publish_async.return_value = rh1
+        client.wait_all.side_effect = [
+            [{"sub-a": _make_timeout_result("sub-a", "msg-1")}],
+            [{"sub-a": _make_timeout_result("sub-a", "msg-1")}],
+        ]
+
+        handler = GPMQAsyncBatchHandler(client, timeout=0.05, queue_size=4)
+        handler.send_message("type_a", {"id": 1})
+
+        # In production client.wait_all(timeout=1.0) blocks ~1s, so a 0.05s
+        # deadline yields exactly one loop call + one final-cleanup call. The
+        # mock returns instantly, so patch monotonic to simulate that blocking:
+        # deadline computed at t=0, first loop check in-window (t=0 < 0.05),
+        # next check past the deadline (t=0.05) -> loop exits -> final cleanup.
+        monotonic_values = iter([0.0, 0.0, 0.05])
+        with patch("gpmq.async_batch.time.monotonic", side_effect=monotonic_values):
+            results = handler.wait_all()
+
+        assert isinstance(results, list)
+        assert len(results) == 1

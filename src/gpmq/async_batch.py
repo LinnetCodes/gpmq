@@ -121,8 +121,12 @@ class GPMQAsyncBatchHandler:
                                 msg_type, payload, corr_id, target
                             )
                             new_active.append((next_idx, new_handler))
-                        except Exception:
-                            result_map[next_idx] = {}
+                        except Exception as exc:
+                            raise RuntimeError(
+                                f"async_batch aborted: publish_async failed for "
+                                f"message index {next_idx} "
+                                f"(type={msg_type!r}, payload={payload!r})"
+                            ) from exc
                         next_idx += 1
                 else:
                     new_active.append((orig_idx, _handler))
@@ -146,7 +150,7 @@ class GPMQAsyncBatchHandler:
             for orig_idx, result in zip(active_indices, final_results):
                 result_map[orig_idx] = result
 
-        self._all_results = [result_map[i] for i in range(total)]
+        self._all_results = [result_map.get(i, {}) for i in range(total)]
 
         if self._progress:
             self._progress.finish()
