@@ -464,18 +464,44 @@ def test_status_json_format(mock_init, mock_create_adapter):
 # --- error handling tests (additional) ---
 
 
+@patch("gpmq.cli._get_audit_store")
+@patch("gpmq.cli._resolve_audit_config")
 @patch("gpmq.cli._init_cfg_mgr")
-def test_audit_cleanup_connection_error(mock_init):
-    """audit cleanup should handle connection errors gracefully."""
-    mock_init.side_effect = Exception("Connection failed")
+def test_audit_cleanup_handles_audit_storage_failure(mock_init, mock_resolve, mock_get_store):
+    """6.2: audit cleanup handles an audit-storage failure gracefully.
+
+    The old test_audit_cleanup_connection_error patched _init_cfg_mgr (a
+    config-init failure) and asserted 'exit_code != 0 or error in output',
+    which passed trivially on empty output. This rewrites it to patch
+    _get_audit_store so the cleanup operation itself fails (a genuine
+    audit-storage failure), and tightens the assertion to require BOTH a
+    non-zero exit AND a recognizable audit-error indicator.
+    """
+    from contextlib import contextmanager
+
+    mock_resolve.return_value = ("test_audit.db", True)
+    boom = RuntimeError("audit storage failure")
+
+    @contextmanager
+    def fake_store(db_path):
+        store = MagicMock()
+        store.cleanup_by_type_before.side_effect = boom
+        store.cleanup_by_time.side_effect = boom
+        yield store
+
+    mock_get_store.side_effect = fake_store
 
     runner = CliRunner()
     result = runner.invoke(
         cli,
         ["audit", "cleanup", "gpmq.subscribers.test", "--before", "2026-01-01T00:00:00"],
     )
-    # Should indicate error
-    assert result.exit_code != 0 or "error" in result.output.lower()
+    # The cleanup command does not wrap the store call in try/except, so the
+    # raised exception propagates -> non-zero exit + the exception on result.
+    assert result.exit_code != 0
+    # Recognizable audit-error indicator (not the trivially-matching "error").
+    combined = (result.output + str(result.exception)).lower()
+    assert "audit storage failure" in combined or "storage failure" in combined
 
 
 @patch("gpmq.cli._create_redis_adapter")
