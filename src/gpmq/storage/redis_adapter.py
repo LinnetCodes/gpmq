@@ -378,9 +378,16 @@ class RedisAdapter:
             active: list[str] = []
 
             subscribers = self._client.smembers(f"{key_prefix}subscribers")
-            for sub in subscribers:
-                key = f"{key_prefix}subscriber:{sub}:heartbeat"
-                data = self._client.get(key)
+            if not subscribers:
+                return active
+
+            keys = [f"{key_prefix}subscriber:{sub}:heartbeat" for sub in subscribers]
+            pipe = self._client.pipeline()
+            for key in keys:
+                pipe.get(key)
+            raw_values = pipe.execute()
+
+            for sub, data in zip(subscribers, raw_values):
                 if data:
                     heartbeat_data = json.loads(data)
                     timestamp = heartbeat_data.get("timestamp")

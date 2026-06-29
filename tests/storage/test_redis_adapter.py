@@ -139,6 +139,35 @@ def test_heartbeat_and_active_subscribers(redis_adapter):
     assert "test_sub" not in active
 
 
+def test_get_active_subscribers_returns_active_subset(redis_adapter):
+    """4.2: pipeline returns exactly the subscribers with fresh heartbeats."""
+    import json as _json
+
+    # Register 3 subscribers; 2 get fresh heartbeats, 1 is stale.
+    redis_adapter.register_subscriber("fresh-a", {"message_types": ["t"]})
+    redis_adapter.register_subscriber("fresh-b", {"message_types": ["t"]})
+    redis_adapter.register_subscriber("stale-c", {"message_types": ["t"]})
+
+    redis_adapter.update_heartbeat("fresh-a")
+    redis_adapter.update_heartbeat("fresh-b")
+    # stale-c: overwrite its heartbeat with an old timestamp directly.
+    old_ts = time.time() - 10000
+    redis_adapter._client.set(
+        f"{redis_adapter._config.registry_key_prefix}subscriber:stale-c:heartbeat",
+        _json.dumps({"timestamp": old_ts}),
+    )
+
+    active = redis_adapter.get_active_subscribers(timeout=60.0)
+    assert "fresh-a" in active
+    assert "fresh-b" in active
+    assert "stale-c" not in active
+
+    # Cleanup: the fixture teardown doesn't clean the subscriber registry.
+    redis_adapter.unregister_subscriber("fresh-a")
+    redis_adapter.unregister_subscriber("fresh-b")
+    redis_adapter.unregister_subscriber("stale-c")
+
+
 def test_unregister_subscriber(redis_adapter):
     """unregister_subscriber should remove all subscriber data."""
     redis_adapter.register_subscriber("test_sub", {"name": "test_sub"})
