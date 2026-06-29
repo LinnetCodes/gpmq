@@ -28,13 +28,23 @@ class GPMQProgress:
         self._current_value = 0
 
     def start(self) -> None:
-        """Start/display the progress indicator."""
-        ...
+        """Start/display the progress indicator.
+
+        The base records the minimal data state (current value reset to 0).
+        Subclasses that add a display (tqdm, rich, etc.) should override this
+        and call ``super().start()`` so data recording still happens.
+        """
+        self._current_value = 0
 
     def update(self, value: int) -> None:
         """Update current progress value."""
         self._current_value = value
 
     def finish(self) -> None:
-        """Finish the progress indicator."""
-        ...
+        """Finish the progress indicator.
+
+        The base records the minimal data state (current value set to the
+        maximum). Subclasses that add a display should override this and call
+        ``super().finish()`` so data recording still happens.
+        """
+        self._current_value = self._max_value

@@ -19,9 +19,11 @@ class MyProgressBar(GPMQProgress):
         self._progbar = ProgressBar()
 
     def start(self):
+        super().start()
         self._progbar.start(max_value=self.max_value, init=True)
 
     def finish(self):
+        super().finish()
         self._progbar.finish()
 
     def update(self, value):
