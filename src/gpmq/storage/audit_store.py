@@ -419,6 +419,44 @@ class AuditStore:
             self._conn.commit()
             return result_count + message_count
 
+    def cleanup_by_type_before(self, message_type: str, before: datetime) -> int:
+        """Delete messages of a specific type older than a timestamp.
+
+        Args:
+            message_type: Message type to filter.
+            before: Cutoff timestamp (exclusive).
+
+        Returns:
+            Total count of deleted records (results + messages).
+
+        Raises:
+            sqlite3.Error: If cleanup fails
+        """
+        with self._lock:
+            if self._conn is None:
+                return 0
+            cursor = self._conn.cursor()
+
+            cursor.execute(
+                """
+                DELETE FROM results
+                WHERE message_id IN (
+                    SELECT id FROM messages WHERE type = ? AND timestamp < ?
+                )
+            """,
+                (message_type, before.isoformat()),
+            )
+            result_count = cursor.rowcount
+
+            cursor.execute(
+                "DELETE FROM messages WHERE type = ? AND timestamp < ?",
+                (message_type, before.isoformat()),
+            )
+            message_count = cursor.rowcount
+
+            self._conn.commit()
+            return result_count + message_count
+
     def stats(self) -> dict[str, Any]:
         """Get statistics.
 

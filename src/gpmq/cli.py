@@ -324,7 +324,7 @@ def audit_cleanup(
 
     with _get_audit_store(audit_db_path) as store:
         if message_type:
-            count = store.cleanup_by_type(message_type)
+            count = store.cleanup_by_type_before(message_type, before_dt)
         else:
             count = store.cleanup_by_time(before_dt)
 

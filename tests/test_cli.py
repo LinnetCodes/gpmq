@@ -197,10 +197,10 @@ def test_audit_cleanup_by_time(mock_init, mock_resolve, mock_get_store):
 @patch("gpmq.cli._resolve_audit_config")
 @patch("gpmq.cli._init_cfg_mgr")
 def test_audit_cleanup_by_type(mock_init, mock_resolve, mock_get_store):
-    """audit cleanup --type should call cleanup_by_type."""
+    """audit cleanup --type --before should call cleanup_by_type_before (2.5)."""
     mock_resolve.return_value = ("test_audit.db", True)
     mock_store = MagicMock()
-    mock_store.cleanup_by_type.return_value = 3
+    mock_store.cleanup_by_type_before.return_value = 3
     mock_get_store.return_value.__enter__ = MagicMock(return_value=mock_store)
     mock_get_store.return_value.__exit__ = MagicMock(return_value=False)
 
@@ -218,7 +218,9 @@ def test_audit_cleanup_by_type(mock_init, mock_resolve, mock_get_store):
         ],
     )
     assert result.exit_code == 0
-    mock_store.cleanup_by_type.assert_called_once_with("user_created")
+    # With both --type and --before, the combo method is used (type, before_dt).
+    mock_store.cleanup_by_type_before.assert_called_once()
+    assert mock_store.cleanup_by_type_before.call_args.args[0] == "user_created"
     assert "3" in result.output
 
 

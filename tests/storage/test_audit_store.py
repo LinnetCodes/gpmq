@@ -267,6 +267,62 @@ def test_cleanup_by_type(audit_store):
     assert len(results) == 1
 
 
+def test_cleanup_by_type_before(audit_store):
+    """cleanup_by_type_before must delete only the type+before subset.
+
+    2.5: audit cleanup's --type branch previously called cleanup_by_type and
+    ignored --before, deleting ALL of that type. This verifies the combo method
+    deletes 'type_a older than cutoff' while keeping 'type_a newer than cutoff'
+    and 'any other type'.
+    """
+    from datetime import datetime, timezone, timedelta
+    from gpmq.models.message import Message
+    from gpmq.models.result import ProcessResult, ProcessStatus
+
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=1)
+    old_ts = cutoff - timedelta(minutes=30)
+    new_ts = cutoff + timedelta(minutes=30)
+
+    # type_a: one older (delete) + one newer (keep)
+    a_old = Message(id="a-old-0", type="type_a", timestamp=old_ts, publisher="t", payload={})
+    a_new = Message(id="a-new-0", type="type_a", timestamp=new_ts, publisher="t", payload={})
+    # type_b: any time (keep)
+    b_msg = Message(id="b-0", type="type_b", timestamp=old_ts, publisher="t", payload={})
+
+    audit_store.save_message(a_old)
+    audit_store.save_message(a_new)
+    audit_store.save_message(b_msg)
+
+    # Results for each message (results deleted before their messages for FK).
+    audit_store.save_result("a-old-0", ProcessResult(
+        message_id="a-old-0", status=ProcessStatus.SUCCESS,
+        subscriber_name="sub", processing_time=0.1,
+    ))
+    audit_store.save_result("a-new-0", ProcessResult(
+        message_id="a-new-0", status=ProcessStatus.SUCCESS,
+        subscriber_name="sub", processing_time=0.1,
+    ))
+
+    count = audit_store.cleanup_by_type_before("type_a", cutoff)
+
+    # Older type_a message (1) + its result (1) deleted.
+    assert count == 2
+
+    # Newer type_a message KEPT.
+    a_remaining = audit_store.query_by_type("type_a", limit=10)
+    assert [m["id"] for m in a_remaining] == ["a-new-0"]
+
+    # type_b messages KEPT.
+    b_remaining = audit_store.query_by_type("type_b", limit=10)
+    assert [m["id"] for m in b_remaining] == ["b-0"]
+
+    # The older type_a result is gone; the newer one still present.
+    success_results = audit_store.query_by_status(ProcessStatus.SUCCESS, limit=10)
+    remaining_ids = {r["message_id"] for r in success_results}
+    assert "a-old-0" not in remaining_ids
+    assert "a-new-0" in remaining_ids
+
+
 def test_stats(audit_store):
     """stats should return aggregate statistics."""
     from datetime import datetime, timezone
