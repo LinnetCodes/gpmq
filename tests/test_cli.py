@@ -517,3 +517,42 @@ def test_clear_connection_error(mock_init, mock_create_adapter):
         input="y\n",
     )
     assert result.exit_code != 0
+
+
+# --- gpmq_worker standalone entry-point test ---
+
+
+@patch("gpmq.cli._run_worker")
+@patch("gpmq.cli._init_cfg_mgr")
+@patch("gpmq.use_spawn")
+def test_gpmq_worker_bootstrap_chain(mock_use_spawn, mock_init_cfg, mock_run_worker):
+    """6.3: gpmq_worker entry-point wires use_spawn -> _init_cfg_mgr -> _run_worker.
+
+    gpmq_worker (the gpmq-worker console script) is a standalone @click.command
+    distinct from the 'gpmq worker' subcommand and had zero test coverage. It
+    does a LOCAL `from gpmq import use_spawn`, so the patch target is the
+    `gpmq` package namespace (gpmq.use_spawn), not gpmq.cli.use_spawn.
+    """
+    from gpmq.cli import gpmq_worker
+
+    # Attach the three patched mocks to a shared parent to record call order.
+    parent = MagicMock()
+    parent.attach_mock(mock_use_spawn, "use_spawn")
+    parent.attach_mock(mock_init_cfg, "init_cfg")
+    parent.attach_mock(mock_run_worker, "run_worker")
+
+    runner = CliRunner()
+    result = runner.invoke(
+        gpmq_worker,
+        ["gpmq.subscribers.data_loader", "--config", "/some/cfg"],
+    )
+
+    assert result.exit_code == 0
+    mock_use_spawn.assert_called_once_with()
+    mock_init_cfg.assert_called_once_with("/some/cfg")
+    mock_run_worker.assert_called_once_with("gpmq.subscribers.data_loader")
+
+    # Order: use_spawn before init_cfg before run_worker.
+    call_names = [c[0] for c in parent.mock_calls if c[0]]
+    assert call_names.index("use_spawn") < call_names.index("init_cfg")
+    assert call_names.index("init_cfg") < call_names.index("run_worker")
