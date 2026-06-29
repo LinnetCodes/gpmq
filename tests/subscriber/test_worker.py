@@ -888,3 +888,82 @@ class TestWorkerPoisonMessage:
         assert worker._redis.xack.call_count == 2
         # Two publishes: one EXCEPTION (poison) + one SUCCESS (valid).
         assert worker._redis.publish.call_count == 2
+
+
+class TestWorkerReadBatch:
+    """Tests for configurable worker_read_batch_size (4.1)."""
+
+    def _make_worker(self, read_batch_size: int):
+        from gpmq.config import SubscriberConfig
+        from gpmq.subscriber.worker import Worker
+        config_dict = _make_subscriber_config(message_types=["order_created"])
+        config_dict["worker_read_batch_size"] = read_batch_size
+        config = SubscriberConfig(**config_dict)
+        worker = Worker(
+            subscriber_name="test-subscriber",
+            stream_name="gpmq:messages",
+            message_types=["order_created"],
+            worker_id="test-subscriber-hostA-worker-0",
+            hostname="test-host",
+            config_dict=config.model_dump(),
+        )
+        worker._redis = MagicMock()
+        worker._audit = MagicMock()
+        return worker
+
+    def test_reads_configured_batch_size(self):
+        """4.1: xreadgroup count kwarg should match worker_read_batch_size."""
+        worker = self._make_worker(read_batch_size=3)
+
+        from gpmq.subscriber.handler import HandlerRegistry
+        HandlerRegistry.clear()
+        mock_handler = MagicMock()
+        try:
+            HandlerRegistry._handlers["order_created"] = mock_handler
+            # Return a batch of 3 messages.
+            m1_id, m1_fields = _make_stream_message(msg_id="m1", msg_type="order_created")
+            m2_id, m2_fields = _make_stream_message(msg_id="m2", msg_type="order_created")
+            m3_id, m3_fields = _make_stream_message(msg_id="m3", msg_type="order_created")
+            worker._redis.xreadgroup.return_value = [
+                ("gpmq:messages", [(m1_id, m1_fields), (m2_id, m2_fields), (m3_id, m3_fields)]),
+            ]
+            worker._read_and_process()
+
+            # count kwarg propagated to xreadgroup.
+            assert worker._redis.xreadgroup.call_args.kwargs["count"] == 3
+            # All 3 messages processed and ACKed individually.
+            assert worker._redis.xack.call_count == 3
+            assert mock_handler.call_count == 3
+        finally:
+            HandlerRegistry.clear()
+
+    def test_batch_with_one_malformed_does_not_abort_others(self):
+        """4.1 (relies on 1.1): a malformed message in a batch is isolated; siblings still process."""
+        worker = self._make_worker(read_batch_size=2)
+
+        from gpmq.subscriber.handler import HandlerRegistry
+        HandlerRegistry.clear()
+        mock_handler = MagicMock(return_value={"ok": True})
+        try:
+            HandlerRegistry._handlers["order_created"] = mock_handler
+            # First message: poison (invalid payload JSON). Second: valid.
+            poison_fields = {
+                "type": "order_created",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "publisher": "pub",
+                "payload": "this is not json {{{",
+            }
+            good_id, good_fields = _make_stream_message(msg_id="good-1", msg_type="order_created")
+            worker._redis.xreadgroup.return_value = [
+                ("gpmq:messages", [("bad-1", poison_fields), (good_id, good_fields)]),
+            ]
+            worker._read_and_process()
+
+            # Both messages ACKed (poison-handled + processed).
+            assert worker._redis.xack.call_count == 2
+            # The valid message was processed; the malformed one was NOT.
+            mock_handler.assert_called_once()
+            # Poison handling published an EXCEPTION result.
+            assert worker._redis.publish.call_count == 2
+        finally:
+            HandlerRegistry.clear()

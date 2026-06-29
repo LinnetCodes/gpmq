@@ -67,6 +67,7 @@ class Worker(Process):
 
         self._cfg_mgr: GPConfigManager | None = None
         self._key_prefix: str = self._config_dict.get("registry_key_prefix", "gpmq:")
+        self._read_batch_size: int = self._config_dict.get("worker_read_batch_size", 1)
 
         # Set by ``run()`` or injected in tests
         self._redis: Any = None
@@ -236,7 +237,7 @@ class Worker(Process):
                 group=self._subscriber_name,
                 consumer=self.consumer_name,
                 streams={self._stream_name: ">"},
-                count=1,
+                count=self._read_batch_size,
                 block_ms=5000,
             )
             logger.debug(f"Read {len(messages)} messages from stream {self._stream_name}")

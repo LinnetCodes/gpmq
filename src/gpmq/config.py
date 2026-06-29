@@ -127,6 +127,7 @@ class SubscriberConfig(GPMQConfig):
         name: Unique name for this subscriber (also consumer group name)
         handlers: List of handler configurations
         workers: Number of worker processes
+        worker_read_batch_size: Number of messages each worker reads per XREADGROUP round
         subscriber_timeout: Timeout for individual subscriber in seconds
         embedded_publisher: publisher config path for an embedded publisher in a subscriber that do message relay
         worker_context_processor: Import path to a worker context processor function
@@ -143,6 +144,9 @@ class SubscriberConfig(GPMQConfig):
         min_length=1, description="Handler configurations"
     )
     workers: int = Field(default=1, ge=1, description="Number of worker processes")
+    worker_read_batch_size: int = Field(
+        default=1, ge=1, description="Number of messages each worker reads per XREADGROUP round"
+    )
     subscriber_timeout: float = Field(
         default=60.0, ge=1.0, description="Subscriber processing timeout in seconds"
     )
