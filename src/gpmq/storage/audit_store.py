@@ -117,9 +117,9 @@ class AuditStore:
         Raises:
             sqlite3.Error: If save fails (fail fast)
         """
-        if self._conn is None:
-            return
         with self._lock:
+            if self._conn is None:
+                return
             cursor = self._conn.cursor()
             cursor.execute(
                 """
@@ -148,9 +148,9 @@ class AuditStore:
         Raises:
             sqlite3.Error: If save fails (fail fast)
         """
-        if self._conn is None:
-            return
         with self._lock:
+            if self._conn is None:
+                return
             cursor = self._conn.cursor()
             cursor.execute(
                 """
@@ -193,9 +193,9 @@ class AuditStore:
         Raises:
             sqlite3.Error: If query fails
         """
-        if self._conn is None:
-            return []
         with self._lock:
+            if self._conn is None:
+                return []
             cursor = self._conn.cursor()
 
             query = "SELECT * FROM messages WHERE type = ?"
@@ -233,9 +233,9 @@ class AuditStore:
         Raises:
             sqlite3.Error: If query fails
         """
-        if self._conn is None:
-            return []
         with self._lock:
+            if self._conn is None:
+                return []
             cursor = self._conn.cursor()
             cursor.execute(
                 """
@@ -260,9 +260,9 @@ class AuditStore:
         Raises:
             sqlite3.Error: If query fails
         """
-        if self._conn is None:
-            return []
         with self._lock:
+            if self._conn is None:
+                return []
             cursor = self._conn.cursor()
             cursor.execute(
                 """
@@ -286,9 +286,9 @@ class AuditStore:
         Raises:
             sqlite3.Error: If query fails
         """
-        if self._conn is None:
-            return []
         with self._lock:
+            if self._conn is None:
+                return []
             cursor = self._conn.cursor()
             cursor.execute(
                 """
@@ -312,9 +312,9 @@ class AuditStore:
         Raises:
             sqlite3.Error: If cleanup fails
         """
-        if self._conn is None:
-            return 0
         with self._lock:
+            if self._conn is None:
+                return 0
             cursor = self._conn.cursor()
 
             # Delete results first (foreign key constraint)
@@ -349,9 +349,9 @@ class AuditStore:
         Raises:
             sqlite3.Error: If cleanup fails
         """
-        if self._conn is None:
-            return 0
         with self._lock:
+            if self._conn is None:
+                return 0
             cursor = self._conn.cursor()
 
             # Delete results first
@@ -385,14 +385,14 @@ class AuditStore:
         Raises:
             sqlite3.Error: If stats query fails
         """
-        if self._conn is None:
-            return {
-                "total_messages": 0,
-                "total_results": 0,
-                "results_by_status": {},
-                "messages_by_type": {},
-            }
         with self._lock:
+            if self._conn is None:
+                return {
+                    "total_messages": 0,
+                    "total_results": 0,
+                    "results_by_status": {},
+                    "messages_by_type": {},
+                }
             cursor = self._conn.cursor()
 
             # Total counts

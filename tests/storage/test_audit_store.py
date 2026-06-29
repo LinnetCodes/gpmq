@@ -98,6 +98,50 @@ def test_save_fail_fast_on_error(audit_store, temp_db_path):
     audit_store.save_result("test-id", result)
 
 
+def test_save_result_guard_is_inside_lock(temp_db_path):
+    """Regression for 1.5: after close(), save_result must be a silent no-op
+    (guard observed under the lock), not raise on a None/closed cursor."""
+    from gpmq.models.result import ProcessResult, ProcessStatus
+    from gpmq.storage.audit_store import AuditStore
+
+    store = AuditStore(temp_db_path)
+    store.connect()
+    store.close()  # _conn is now None
+
+    result = ProcessResult(
+        message_id="closed-1",
+        status=ProcessStatus.SUCCESS,
+        subscriber_name="sub",
+        processing_time=0.1,
+    )
+    # Must be a silent no-op, NOT raise ProgrammingError on a None cursor.
+    store.save_result("closed-1", result)
+    # Also exercise a query and a cleanup method to confirm they no-op cleanly.
+    assert store.query_by_type("x") == []
+    assert store.cleanup_by_time(__import__("datetime").datetime.now()) == 0
+
+
+def test_audit_store_guards_are_inside_lock():
+    """Structural check (1.5): every None-guard must be textually INSIDE the
+    lock block (guard line must appear AFTER the 'with self._lock:' line)."""
+    import inspect
+    from gpmq.storage.audit_store import AuditStore
+
+    guarded = [
+        "save_message", "save_result",
+        "query_by_type", "query_by_time_range", "query_by_status",
+        "query_by_correlation_id", "cleanup_by_time", "cleanup_by_type", "stats",
+    ]
+    for name in guarded:
+        src = inspect.getsource(getattr(AuditStore, name))
+        assert "if self._conn is None" in src, f"{name} missing None guard"
+        guard_idx = src.index("if self._conn is None")
+        lock_idx = src.index("with self._lock:")
+        assert guard_idx > lock_idx, (
+            f"{name}: None guard is BEFORE the lock block (TOCTOU still present)"
+        )
+
+
 def test_query_by_type(audit_store):
     """query_by_type should filter messages by type."""
     from datetime import datetime, timezone
