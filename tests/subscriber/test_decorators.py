@@ -94,3 +94,57 @@ class TestRunForeverMethodDecorator:
             pass
 
         assert getattr(my_run_forever_upper, "_gpmq_run_forever", False) is True
+
+    def test_rejects_wrong_first_param_name(self):
+        """Should reject function whose first param is not named 'subscriber'."""
+        from gpmq.subscriber.decorators import run_forever_method
+
+        with pytest.raises(TypeError, match="first parameter must be named 'subscriber'"):
+            @run_forever_method
+            def my_run_forever(conn, paras):
+                pass
+
+    def test_rejects_non_subscriber_first_param_annotation(self):
+        """Should reject a first param annotated with a non-Subscriber type."""
+        from gpmq.subscriber.decorators import run_forever_method
+
+        with pytest.raises(TypeError, match="annotation must be Subscriber"):
+            @run_forever_method
+            def my_run_forever(subscriber: int, paras):
+                pass
+
+    def test_accepts_real_subscriber_first_param_annotation(self):
+        """Should accept first param annotated with the real Subscriber class."""
+        from gpmq.subscriber.decorators import run_forever_method
+
+        @run_forever_method
+        def my_run_forever(subscriber: Subscriber, paras):
+            pass
+
+        assert getattr(my_run_forever, "_gpmq_run_forever", False) is True
+
+    def test_accepts_string_form_subscriber_annotation(self):
+        """Should accept first param annotated with the string form 'Subscriber'.
+
+        Mirrors the string form produced under `from __future__ import annotations`,
+        which is how the real package sources define decorators/consumers.
+        """
+        from gpmq.subscriber.decorators import run_forever_method
+
+        def my_run_forever(subscriber, paras):
+            pass
+
+        # Inject the string-form annotation (no future-annotations in this module).
+        my_run_forever.__annotations__ = {"subscriber": "Subscriber"}
+        decorated = run_forever_method(my_run_forever)
+        assert getattr(decorated, "_gpmq_run_forever", False) is True
+
+    def test_first_param_case_insensitive(self):
+        """Should accept first param named 'Subscriber' (case-insensitive)."""
+        from gpmq.subscriber.decorators import run_forever_method
+
+        @run_forever_method
+        def my_run_forever(SUBSCRIBER, paras):
+            pass
+
+        assert getattr(my_run_forever, "_gpmq_run_forever", False) is True

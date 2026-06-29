@@ -7,6 +7,20 @@ from collections.abc import Callable
 from typing import Any, Optional
 
 
+def _is_subscriber_annotation(ann) -> bool:
+    """Return True if ann is the real Subscriber class.
+
+    Lazy import to avoid a circular import: decorators.py -> subscriber.py
+    would be circular because subscriber.py imports decorators at module load.
+    """
+    try:
+        from gpmq.subscriber.subscriber import Subscriber
+
+        return ann is Subscriber
+    except Exception:
+        return False
+
+
 def worker_context_processor(func: Callable) -> Callable:
     """Decorator that validates and marks a function as a worker context processor.
 
@@ -106,7 +120,22 @@ def run_forever_method(func: Callable) -> Callable:
             f"2 parameters (subscriber, paras), got {len(params)}"
         )
 
-    # 2. Second parameter must be named "paras" (case-insensitive)
+    # 2. First parameter must be named "subscriber" (case-insensitive)
+    first_param = params[0]
+    if first_param.name.lower() != "subscriber":
+        raise TypeError(
+            f"run_forever_method '{func.__name__}' first parameter must be "
+            f"named 'subscriber', got '{first_param.name}'"
+        )
+    if first_param.annotation is not inspect.Parameter.empty:
+        ann = first_param.annotation
+        if ann != "Subscriber" and not _is_subscriber_annotation(ann):
+            raise TypeError(
+                f"run_forever_method '{func.__name__}' parameter 'subscriber' "
+                f"annotation must be Subscriber, got {ann!r}"
+            )
+
+    # 3. Second parameter must be named "paras" (case-insensitive)
     second_param = params[1]
     if second_param.name.lower() != "paras":
         raise TypeError(
@@ -114,8 +143,7 @@ def run_forever_method(func: Callable) -> Callable:
             f"named 'paras', got '{second_param.name}'"
         )
 
-
-    # 3. If annotation present, must be dict[str, Any] or Optional[dict[str, Any]]
+    # 4. If annotation present, must be dict[str, Any] or Optional[dict[str, Any]]
     if second_param.annotation is not inspect.Parameter.empty:
         ann = second_param.annotation
         if (ann != dict[str, Any] and str(ann) != "dict[str, Any]" and
@@ -126,7 +154,7 @@ def run_forever_method(func: Callable) -> Callable:
                 f"got {ann!r}"
             )
 
-    # 4. Return annotation if present must be None
+    # 5. Return annotation if present must be None
     if sig.return_annotation is not inspect.Signature.empty:
         if sig.return_annotation != "None" and sig.return_annotation is not None:
             raise TypeError(
@@ -134,7 +162,7 @@ def run_forever_method(func: Callable) -> Callable:
                 f"got {sig.return_annotation!r}, type {type(sig.return_annotation)}"
             )
 
-    # 5. Set marker attribute
+    # 6. Set marker attribute
     func._gpmq_run_forever = True  # type: ignore[attr-defined]
 
     return func
