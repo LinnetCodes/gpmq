@@ -53,6 +53,7 @@ from gpmq.progress import GPMQProgress
 from gpmq.async_batch import GPMQAsyncBatchHandler
 
 # Subscriber
+from gpmq.subscriber import worker_context_processor
 from gpmq.subscriber.handler import HandlerRegistry, message_handler
 from gpmq.subscriber.subscriber import Subscriber
 
@@ -99,6 +100,7 @@ __all__ = [
     "GPMQAsyncBatchHandler",
     # Subscriber
     "message_handler",
+    "worker_context_processor",
     "HandlerRegistry",
     "Subscriber",
 ]
