@@ -850,3 +850,41 @@ class TestWorkerPoisonMessage:
         worker._process_message("bad-6", fields, handler)
         worker._redis.xack.assert_called_once()
         worker._redis.publish.assert_called_once()
+
+    def test_continues_consuming_after_poison_message(self):
+        """After handling one poison message, the worker must still process the next valid one.
+
+        This is the headline 1.1 property: a single malformed message does not
+        permanently stop consumption.
+        """
+        from gpmq.models.result import ProcessResult, ProcessStatus
+
+        worker = self._make_worker()
+        valid_handler = MagicMock(
+            return_value=ProcessResult(
+                message_id="good-1",
+                status=ProcessStatus.SUCCESS,
+                subscriber_name="test-subscriber",
+                processing_time=0.01,
+            )
+        )
+
+        # First: a poison message (invalid payload JSON).
+        poison_fields = {
+            "type": "order_created",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "publisher": "pub",
+            "payload": "this is not json {{{",
+        }
+        worker._process_message("bad-1", poison_fields, valid_handler)  # must not raise
+
+        # Second: a valid message of the same type.
+        good_id, good_fields = _make_stream_message(msg_id="good-1", msg_type="order_created")
+        worker._process_message(good_id, good_fields, valid_handler)  # must not raise
+
+        # The handler was called exactly once — for the valid message, NOT the poison one.
+        valid_handler.assert_called_once()
+        # The poison message was ACKed, and the valid message was ACKed too.
+        assert worker._redis.xack.call_count == 2
+        # Two publishes: one EXCEPTION (poison) + one SUCCESS (valid).
+        assert worker._redis.publish.call_count == 2
