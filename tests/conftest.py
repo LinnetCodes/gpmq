@@ -2,8 +2,15 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import redis
 import pytest
+
+if TYPE_CHECKING:
+    from gpmq.config import GPMQConfig, PublisherConfig
+    from gpmq.storage.audit_store import AuditStore
+    from gpmq.storage.redis_adapter import RedisAdapter
 
 
 @pytest.fixture
@@ -56,7 +63,7 @@ def audit_store(temp_db_path) -> AuditStore:
 
 
 @pytest.fixture
-def publisher_config() -> "PublisherConfig":
+def publisher_config() -> PublisherConfig:
     """Create test publisher config."""
     from gpmq.config import PublisherConfig
     return PublisherConfig(

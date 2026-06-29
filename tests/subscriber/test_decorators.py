@@ -1,11 +1,10 @@
 """Tests for subscriber decorators."""
 
-from typing import Optional
+from typing import Any, Optional
 
 import pytest
 
 from gpmq.subscriber.subscriber import Subscriber
-from typing import Any, Optional
 
 
 class TestRunForeverMethodDecorator:

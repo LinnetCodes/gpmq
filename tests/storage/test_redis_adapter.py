@@ -185,7 +185,7 @@ def test_xpending(redis_adapter):
     redis_adapter.clear_stream("test:pending:stream")
 
     redis_adapter.xgroup_create("test:pending:stream", "test_group", id="0")
-    msg_id = redis_adapter.xadd("test:pending:stream", {"type": "test"})
+    redis_adapter.xadd("test:pending:stream", {"type": "test"})
 
     # Read but don't ack
     redis_adapter.xreadgroup(

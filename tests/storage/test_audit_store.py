@@ -1,7 +1,7 @@
 """SQLite audit store for GPMQ messages and results."""
 
 import sqlite3
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 
 
 def test_audit_store_init(temp_db_path):

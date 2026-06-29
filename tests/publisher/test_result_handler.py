@@ -33,7 +33,7 @@ class TestResultHandlerInit:
     def test_no_subscribers_does_not_subscribe(self):
         """Should not subscribe when subscriber list is empty."""
         redis = MagicMock()
-        handler = ResultHandler("msg-1", [], redis, key_prefix="gpmq:")
+        ResultHandler("msg-1", [], redis, key_prefix="gpmq:")
         redis.subscribe.assert_not_called()
 
     def test_custom_key_prefix(self):
