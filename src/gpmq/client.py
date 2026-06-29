@@ -238,8 +238,10 @@ class GPMQClient:
         Returns:
             List of result dicts, one per handler
         """
+        if not handlers:
+            return []
         effective_timeout = timeout or self._config.publish_timeout
-        with ThreadPoolExecutor(max_workers=len(handlers)) as executor:
+        with ThreadPoolExecutor(max_workers=min(len(handlers), 32)) as executor:
             futures = [
                 executor.submit(
                     handler.wait,

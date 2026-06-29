@@ -325,6 +325,25 @@ class TestGPMQClientWaitAll:
             timeout=10.0, allow_timeout_retry=None
         )
 
+    def test_wait_all_empty_handlers_returns_empty(self, client):
+        """3.1: wait_all([]) returns [] without raising ValueError."""
+        results = client.wait_all([])
+        assert results == []
+
+    def test_wait_all_caps_threads_but_returns_all(self, client):
+        """4.3: >32 handlers still returns all results (cap is internal, doesn't drop)."""
+        handlers = []
+        expected = []
+        for i in range(40):
+            h = MagicMock(spec=ResultHandler)
+            result = {f"sub-{i}": f"r-{i}"}
+            h.wait.return_value = result
+            handlers.append(h)
+            expected.append(result)
+        results = client.wait_all(handlers, timeout=0.1)
+        assert len(results) == 40
+        assert results == expected
+
     def test_passes_allow_timeout_retry_to_handler_wait(self, client):
         """Should pass allow_timeout_retry=True to each handler.wait()."""
         mock_handler1 = MagicMock(spec=ResultHandler)
