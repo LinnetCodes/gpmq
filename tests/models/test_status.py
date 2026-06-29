@@ -11,20 +11,20 @@ class TestWorkerState:
 
     def test_state_values(self):
         """Test that all state values exist."""
-        assert WorkerState.IDLE == "idle"
+        assert WorkerState.RUNNING == "running"
         assert WorkerState.BUSY == "busy"
         assert WorkerState.STOPPED == "stopped"
         assert WorkerState.ERROR == "error"
 
     def test_state_is_string_enum(self):
         """Test that WorkerState is a string enum."""
-        assert WorkerState.IDLE.value == "idle"
-        assert isinstance(WorkerState.IDLE.value, str)
+        assert WorkerState.RUNNING.value == "running"
+        assert isinstance(WorkerState.RUNNING.value, str)
 
     def test_state_comparison(self):
         """Test that states can be compared."""
-        assert WorkerState.IDLE == WorkerState.IDLE
-        assert WorkerState.IDLE != WorkerState.BUSY
+        assert WorkerState.RUNNING == WorkerState.RUNNING
+        assert WorkerState.RUNNING != WorkerState.BUSY
 
 
 class TestWorkerStatus:
@@ -35,13 +35,13 @@ class TestWorkerStatus:
         status = WorkerStatus(
             worker_id="worker-1",
             process_id=12345,
-            status=WorkerState.IDLE,
+            status=WorkerState.RUNNING,
             last_activity=datetime(2026, 3, 25, 10, 30, 0),
         )
 
         assert status.worker_id == "worker-1"
         assert status.process_id == 12345
-        assert status.status == WorkerState.IDLE
+        assert status.status == WorkerState.RUNNING
         assert status.last_activity == datetime(2026, 3, 25, 10, 30, 0)
         assert status.current_message_id is None
         assert status.messages_processed == 0
@@ -93,7 +93,7 @@ class TestWorkerStatus:
             WorkerStatus(
                 # Missing worker_id
                 process_id=12345,
-                status=WorkerState.IDLE,
+                status=WorkerState.RUNNING,
                 last_activity=datetime.now(),
             )
 
@@ -129,21 +129,21 @@ class TestWorkerStatus:
         status = WorkerStatus(
             worker_id="worker-1",
             process_id=12345,
-            status=WorkerState.IDLE,
+            status=WorkerState.RUNNING,
             last_activity=datetime(2026, 3, 25, 10, 30, 0),
         )
 
         json_str = status.model_dump_json()
         assert isinstance(json_str, str)
         assert '"worker_id":"worker-1"' in json_str
-        assert '"status":"idle"' in json_str
+        assert '"status":"running"' in json_str
 
     def test_status_from_dict(self):
         """Test creating status from dictionary."""
         data = {
             "worker_id": "worker-1",
             "process_id": 12345,
-            "status": "idle",
+            "status": "running",
             "last_activity": "2026-03-25T10:30:00",
         }
 
@@ -151,7 +151,7 @@ class TestWorkerStatus:
 
         assert status.worker_id == "worker-1"
         assert status.process_id == 12345
-        assert status.status == WorkerState.IDLE
+        assert status.status == WorkerState.RUNNING
 
     def test_status_from_dict_with_optional_fields(self):
         """Test creating status from dict with optional fields."""

@@ -99,7 +99,7 @@ class Subscriber:
             worker_ctx = dict(self._worker_ctx)
             worker_ctx["subscribe_message_types"] = self._config.get_message_types()
 
-            self._worker_manager = WorkerManager(config_dict, worker_ctx)
+            self._worker_manager = WorkerManager(config_dict, worker_ctx, redis_conn=self._redis)
             self._worker_manager.start()
             self._running = True
 

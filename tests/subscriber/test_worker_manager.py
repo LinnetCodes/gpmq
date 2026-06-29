@@ -129,9 +129,11 @@ class TestWorkerManagerStop:
 
         manager = WorkerManager(config_dict, ctx)
         manager.start()
+        workers_before = list(manager._workers)
         manager.stop(timeout=5)
 
-        for w in manager._workers:
+        assert workers_before  # non-empty, so the assertion is meaningful
+        for w in workers_before:
             assert not w.is_alive()
 
 
@@ -155,6 +157,53 @@ class TestWorkerManagerGetStatus:
         for status in statuses:
             assert isinstance(status, WorkerStatus)
             assert status.process_id > 0
-            assert status.status in (WorkerState.IDLE, WorkerState.BUSY)
+            assert status.status in (WorkerState.RUNNING, WorkerState.STOPPED, WorkerState.ERROR)
 
+        manager.stop()
+
+    def test_zombie_worker_reported_as_error(self):
+        """3.3: an alive worker whose heartbeat expired is reported as ERROR."""
+        import time
+        from unittest.mock import MagicMock
+        from gpmq.subscriber.worker_manager import WorkerManager
+
+        config_dict = _make_subscriber_config(workers=1)
+        subscrib_cfg = SubscriberConfig(**config_dict)
+        ctx = {"subscribe_message_types": subscrib_cfg.get_message_types()}
+
+        manager = WorkerManager(config_dict, ctx)
+        manager.start()
+        wid = manager._workers[0].worker_id
+
+        manager._redis = MagicMock()
+        manager._redis.get_consumer_group_workers.return_value = [
+            {"worker_id": wid, "last_heartbeat": time.time() - 1000},
+        ]
+
+        statuses = manager.get_worker_status()
+        assert len(statuses) == 1
+        assert statuses[0].status == WorkerState.ERROR
+        manager.stop()
+
+    def test_fresh_heartbeat_reported_as_running(self):
+        """3.3: an alive worker with a fresh heartbeat is RUNNING."""
+        import time
+        from unittest.mock import MagicMock
+        from gpmq.subscriber.worker_manager import WorkerManager
+
+        config_dict = _make_subscriber_config(workers=1)
+        subscrib_cfg = SubscriberConfig(**config_dict)
+        ctx = {"subscribe_message_types": subscrib_cfg.get_message_types()}
+
+        manager = WorkerManager(config_dict, ctx)
+        manager.start()
+        wid = manager._workers[0].worker_id
+
+        manager._redis = MagicMock()
+        manager._redis.get_consumer_group_workers.return_value = [
+            {"worker_id": wid, "last_heartbeat": time.time()},
+        ]
+
+        statuses = manager.get_worker_status()
+        assert statuses[0].status == WorkerState.RUNNING
         manager.stop()
