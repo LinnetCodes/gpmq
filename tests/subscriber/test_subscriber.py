@@ -185,6 +185,47 @@ class TestSubscriberStart:
 
         HandlerRegistry.clear()
 
+    def test_start_failure_rolls_back_registration(self):
+        """5.2: a failed start() must roll back (unregister) and propagate the original error."""
+        from gpmq.subscriber.subscriber import Subscriber
+        from gpmq.subscriber.handler import HandlerRegistry, message_handler
+
+        HandlerRegistry.clear()
+
+        @message_handler(message_types=["type_a"])
+        def handle_a(msg: Message) -> ProcessResult:
+            return ProcessResult(
+                message_id=msg.id,
+                status=ProcessStatus.SUCCESS,
+                subscriber_name="rollback-sub",
+                processing_time=0.01,
+            )
+
+        HandlerRegistry.register(handle_a)
+
+        config = _make_subscriber_config(
+            name="rollback-sub",
+            handlers=[{"message_types": ["type_a"], "handler": "myapp.handlers.handle_a"}],
+        )
+
+        with (
+            patch("gpmq.storage.redis_adapter.RedisAdapter") as mock_redis_cls,
+            patch("gpmq.subscriber.handler.HandlerRegistry.load_handler"),
+            patch("gpmq.subscriber.worker_manager.WorkerManager"),
+        ):
+            mock_redis = MagicMock()
+            mock_redis_cls.return_value = mock_redis
+            # Let connect/register succeed, but make xgroup_create (a late step) raise.
+            mock_redis.xgroup_create.side_effect = RuntimeError("xgroup boom")
+            sub = Subscriber(config)
+            # The original RuntimeError must propagate (not masked by rollback).
+            with pytest.raises(RuntimeError, match="xgroup boom"):
+                sub.start()
+            # Rollback: unregister_subscriber was called (register ran before the failure).
+            mock_redis.unregister_subscriber.assert_called_once_with("rollback-sub")
+
+        HandlerRegistry.clear()
+
 
 class TestSubscriberStop:
     """Tests for Subscriber.stop()."""

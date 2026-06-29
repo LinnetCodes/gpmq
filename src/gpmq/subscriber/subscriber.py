@@ -62,49 +62,61 @@ class Subscriber:
         from gpmq.subscriber.handler import HandlerRegistry
         from gpmq.subscriber.worker_manager import WorkerManager
 
-        # Connect to Redis
-        self._redis = RedisAdapter(self._config)
-        self._redis.connect()
+        try:
+            # Connect to Redis
+            self._redis = RedisAdapter(self._config)
+            self._redis.connect()
 
-        # Load handler functions
-        for handler_cfg in self._config.handlers:
-            HandlerRegistry.load_handler(handler_cfg.handler)
+            # Load handler functions
+            for handler_cfg in self._config.handlers:
+                HandlerRegistry.load_handler(handler_cfg.handler)
 
-        # Validate: config message_types must be subset of decorator-declared types
-        self._validate_handler_types()
+            # Validate: config message_types must be subset of decorator-declared types
+            self._validate_handler_types()
 
-        # Register subscriber in Redis
-        subscriber_info = {
-            "message_types": self._config.get_message_types(),
-            "workers": self._config.workers,
-            "stream_name": self._config.stream_name,
-        }
-        self._redis.register_subscriber(self.name, subscriber_info)
+            # Register subscriber in Redis
+            subscriber_info = {
+                "message_types": self._config.get_message_types(),
+                "workers": self._config.workers,
+                "stream_name": self._config.stream_name,
+            }
+            self._redis.register_subscriber(self.name, subscriber_info)
 
-        # Create consumer group
-        self._redis.xgroup_create(self._config.stream_name, self.name)
+            # Create consumer group
+            self._redis.xgroup_create(self._config.stream_name, self.name)
 
-        # Start heartbeat daemon thread
-        self._heartbeat_stop.clear()
-        self._heartbeat_thread = threading.Thread(
-            target=self._heartbeat_loop,
-            daemon=True,
-            name=f"{self.name}-heartbeat",
-        )
-        self._heartbeat_thread.start()
+            # Start heartbeat daemon thread
+            self._heartbeat_stop.clear()
+            self._heartbeat_thread = threading.Thread(
+                target=self._heartbeat_loop,
+                daemon=True,
+                name=f"{self.name}-heartbeat",
+            )
+            self._heartbeat_thread.start()
 
-        # Start worker manager
-        config_dict = self._config.model_dump()
-        worker_ctx = dict(self._worker_ctx)
-        worker_ctx["subscribe_message_types"] = self._config.get_message_types()
+            # Start worker manager
+            config_dict = self._config.model_dump()
+            worker_ctx = dict(self._worker_ctx)
+            worker_ctx["subscribe_message_types"] = self._config.get_message_types()
 
-        self._worker_manager = WorkerManager(config_dict, worker_ctx)
-        self._worker_manager.start()
-        self._running = True
+            self._worker_manager = WorkerManager(config_dict, worker_ctx)
+            self._worker_manager.start()
+            self._running = True
 
-        logger.info(
-            "Subscriber {} started with {} workers", self.name, self._config.workers
-        )
+            logger.info(
+                "Subscriber {} started with {} workers", self.name, self._config.workers
+            )
+        except Exception:
+            # Roll back any completed steps; never mask the original error.
+            try:
+                self.stop()
+            except Exception:
+                logger.error(
+                    "Error rolling back after failed start of subscriber {}\n{}",
+                    self.name,
+                    traceback.format_exc(),
+                )
+            raise
 
     def stop(self) -> None:
         """Stop the subscriber."""
@@ -147,7 +159,14 @@ class Subscriber:
         except (KeyboardInterrupt, SystemExit):
             logger.info(f"\nStopping subscriber '{self.name}' ...")
         finally:
-            self.stop()
+            try:
+                self.stop()
+            except Exception:
+                logger.error(
+                    "Error during run_forever teardown of subscriber {}\n{}",
+                    self.name,
+                    traceback.format_exc(),
+                )
 
     def _run_custom_forever(self) -> None:
         """Load and invoke the configured run_forever_method function."""
