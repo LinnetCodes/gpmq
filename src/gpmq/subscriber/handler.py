@@ -97,6 +97,13 @@ class HandlerRegistry:
     Maps message type strings to handler callables.  Use
     :meth:`register` to add a handler (decorated with
     :func:`message_handler`) and :meth:`get_handler` to look one up.
+
+    Note:
+        This registry is a global class-level dict by design. GPMQ runs one
+        Subscriber per process (the CLI creates a single Subscriber then
+        ``run_forever()``), so process isolation already provides registry
+        isolation. Spawned worker processes get a fresh interpreter and
+        rebuild their own registry by re-importing handler modules.
     """
 
     _handlers: dict[str, Callable] = {}
