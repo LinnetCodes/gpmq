@@ -151,15 +151,19 @@ class TestResultHandlerWaitAny:
     """Tests for wait_any() method."""
 
     def test_returns_on_first_result(self):
-        """Should return as soon as one result arrives."""
+        """Should return as soon as ONE result arrives, not block till all/timeout."""
+        import time as _time
         redis = MagicMock()
         redis.get_message.return_value = {"data": _make_result("msg-1", "sub-a")}
 
         handler = ResultHandler("msg-1", ["sub-a", "sub-b"], redis, key_prefix="gpmq:")
+        start = _time.monotonic()
         results = handler.wait_any(timeout=5.0)
+        elapsed = _time.monotonic() - start
 
         assert len(results) == 1
         assert "sub-a" in results
+        assert elapsed < 1.0, f"wait_any blocked for {elapsed}s (expected early return)"
 
     def test_timeout_returns_empty(self):
         """Should return empty dict if no result arrives before timeout."""

@@ -137,7 +137,7 @@ class ResultHandler:
 
         deadline = time.monotonic() + timeout if timeout else None
 
-        while len(self._results) < len(self._expected):
+        while len(self._results) < 1:
             if deadline is not None:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
@@ -153,7 +153,7 @@ class ResultHandler:
                 if self._audit_store:
                     self._audit_store.save_result(self._message_id, result)
 
-        if len(self._results) == len(self._expected):
+        if self._results:
             self._cleanup()
 
         return dict(self._results)
