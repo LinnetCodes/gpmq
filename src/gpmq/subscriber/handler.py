@@ -5,8 +5,14 @@ from __future__ import annotations
 import importlib
 import inspect
 from collections.abc import Callable
+from typing import Any, Optional
 
 from gpmq.exceptions import DuplicateMessageTypeError
+from gpmq.models.message import Message
+
+# Target type for the optional context parameter; built once so the validator
+# can compare against real (non-string) annotations as well as the string form.
+_CTX_TYPE: Any = Optional[dict[str, Any]]
 
 
 def message_handler(message_types: list[str]) -> Callable:
@@ -30,40 +36,58 @@ def message_handler(message_types: list[str]) -> Callable:
 
     def decorator(func: Callable) -> Callable:
         sig = inspect.signature(func)
-        if 1 <= len(sig.parameters) <= 2:
-            func._gpmq_message_types = message_types  # type: ignore[attr-defined]
-            for name, param in sig.parameters.items():
-                if name.lower() in {"msg", "message"}:
-                    if param.annotation is inspect.Parameter.empty:
-                        continue
-                    if param.annotation != "Message":
-                        raise TypeError(f"parameter '{name}' of a message handler '{func.__name__}' "
-                                        f"must be of Message type, suggested message handler signature: \n"
-                                        f"'msg_handler_func(msg: Message, context: Optional[dict[str, Any]]) -> "
-                                        f"Any', or \n"
-                                        f"'msg_handler_func(msg: Message) -> Any'")
+        params = list(sig.parameters.values())
 
-                elif name.lower() in {"ctx", "context"}:
-                    if param.annotation is inspect.Parameter.empty:
-                        continue
-                    if param.annotation != "Optional[dict[str, Any]]":
-                        raise TypeError(f"parameter '{name}' of a message handler '{func.__name__}' "
-                                        f"must be of type 'Optional[dict[str, Any]]', "
-                                        f"suggested message handler signature: \n"
-                                        f"'msg_handler_func(msg: Message, context: Optional[dict[str, Any]]) -> "
-                                        f"Any', or \n"
-                                        f"'msg_handler_func(msg: Message) -> Any'")
-                else:
-                    raise TypeError(f"invalid parameter '{name}' for message handler '{func.__name__}',"
-                                    f"suggested message handler signature: \n"
-                                    f"'msg_handler_func(msg: Message, context: Optional[dict[str, Any]]) -> Any', or \n"
-                                    f"'msg_handler_func(msg: Message) -> Any'")
-            return func
-        else:
-            raise TypeError(f"message handler only accept 1 or 2 parameters, got {len(sig.parameters)}, "
-                            f"suggested message handler signature: \n"
-                            f"'msg_handler_func(msg: Message, context: Optional[dict[str, Any]]) -> Any', or \n"
-                            f"'msg_handler_func(msg: Message) -> Any'")
+        if not (1 <= len(params) <= 2):
+            raise TypeError(
+                f"message handler only accepts 1 or 2 parameters, got {len(params)}, "
+                f"suggested message handler signature: \n"
+                f"'msg_handler_func(msg: Message, context: Optional[dict[str, Any]]) -> Any', "
+                f"or\n'msg_handler_func(msg: Message) -> Any'"
+            )
+
+        # --- 1st parameter: must be msg/message, annotated Message (or untyped) ---
+        first = params[0]
+        if first.name.lower() not in {"msg", "message"}:
+            raise TypeError(
+                f"the first parameter of message handler '{func.__name__}' must be named "
+                f"'msg' or 'message' (got '{first.name}'), suggested message handler signature: \n"
+                f"'msg_handler_func(msg: Message, context: Optional[dict[str, Any]]) -> Any', "
+                f"or\n'msg_handler_func(msg: Message) -> Any'"
+            )
+        if first.annotation is not inspect.Parameter.empty:
+            if not (first.annotation == "Message" or first.annotation is Message):
+                raise TypeError(
+                    f"parameter '{first.name}' of message handler '{func.__name__}' must be of "
+                    f"Message type, suggested message handler signature: \n"
+                    f"'msg_handler_func(msg: Message, context: Optional[dict[str, Any]]) -> Any', "
+                    f"or\n'msg_handler_func(msg: Message) -> Any'"
+                )
+
+        # --- 2nd parameter (optional): must be ctx/context, annotated Optional[dict[str, Any]] ---
+        if len(params) == 2:
+            second = params[1]
+            if second.name.lower() not in {"ctx", "context"}:
+                raise TypeError(
+                    f"the second parameter of message handler '{func.__name__}' must be named "
+                    f"'context' or 'ctx' (got '{second.name}'), suggested message handler signature: \n"
+                    f"'msg_handler_func(msg: Message, context: Optional[dict[str, Any]]) -> Any', "
+                    f"or\n'msg_handler_func(msg: Message) -> Any'"
+                )
+            if second.annotation is not inspect.Parameter.empty:
+                if not (
+                    second.annotation == "Optional[dict[str, Any]]"
+                    or second.annotation == _CTX_TYPE
+                ):
+                    raise TypeError(
+                        f"parameter '{second.name}' of message handler '{func.__name__}' must be of "
+                        f"type 'Optional[dict[str, Any]]', suggested message handler signature: \n"
+                        f"'msg_handler_func(msg: Message, context: Optional[dict[str, Any]]) -> Any', "
+                        f"or\n'msg_handler_func(msg: Message) -> Any'"
+                    )
+
+        func._gpmq_message_types = message_types  # type: ignore[attr-defined]
+        return func
     return decorator
 
 

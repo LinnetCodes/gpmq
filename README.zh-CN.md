@@ -51,6 +51,7 @@ pip install -e ".[dev]"
 
 ```python
 # myapp/handlers.py
+from __future__ import annotations
 from typing import Any, Optional
 from gpmq import message_handler, Message
 
@@ -242,6 +243,7 @@ embedded_publisher: "gpmq.publisher.embedded"
 然后在处理器中使用内嵌 Publisher 转发消息：
 
 ```python
+from __future__ import annotations
 @message_handler(["msg_ping"])
 def on_ping(msg: Message, context: Optional[dict[str, Any]] = None) -> Any:
     if context and "publisher" in context:
@@ -417,6 +419,7 @@ def init_context(context: dict[str, Any]) -> dict[str, Any]:
 接受两个参数的处理器会将 Worker 上下文作为第二个参数传入：
 
 ```python
+from __future__ import annotations
 from gpmq import message_handler, Message
 from typing import Any, Optional
 

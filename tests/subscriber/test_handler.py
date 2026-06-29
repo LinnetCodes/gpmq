@@ -321,3 +321,102 @@ class TestHandlerRegistryLoadHandler:
     def test_load_handler_invalid_path_raises_error(self):
         with pytest.raises(ImportError):
             HandlerRegistry.load_handler("nonexistent.module.handler")
+
+
+class TestHandlerPositionalValidation:
+    """Regression for 3.2: validator must enforce position, not just name."""
+
+    def test_reversed_param_order_rejected(self):
+        """A (context, msg) handler must be rejected at decoration time."""
+        from typing import Any, Optional
+        with pytest.raises(TypeError):
+
+            @message_handler(message_types=["reverse"])
+            def handler(context: Optional[dict[str, Any]], msg: Message) -> Any:
+                return None
+
+    def test_first_param_msg_accepted(self):
+        @message_handler(message_types=["ok1"])
+        def handler(msg: Message):
+            return None
+        assert handler._gpmq_message_types == ["ok1"]
+
+    def test_first_param_message_accepted(self):
+        @message_handler(message_types=["ok2"])
+        def handler(message: Message):
+            return None
+        assert handler._gpmq_message_types == ["ok2"]
+
+    def test_second_param_ctx_accepted(self):
+        from typing import Any, Optional
+        @message_handler(message_types=["ok3"])
+        def handler(msg: Message, ctx: Optional[dict[str, Any]] = None):
+            return None
+        assert handler._gpmq_message_types == ["ok3"]
+
+    def test_first_param_wrong_name_rejected(self):
+        with pytest.raises(TypeError):
+
+            @message_handler(message_types=["bad1"])
+            def handler(data: Message):
+                return None
+
+    def test_second_param_wrong_name_rejected(self):
+        from typing import Any, Optional
+        with pytest.raises(TypeError):
+
+            @message_handler(message_types=["bad2"])
+            def handler(msg: Message, extra: Optional[dict[str, Any]] = None):
+                return None
+
+
+class TestHandlerAnnotationTolerance:
+    """Regression for 2.4: validator must accept real-type annotations
+    (not just string forms), so handlers work without __future__ import.
+
+    Because this test file has `from __future__ import annotations`, written
+    annotations become strings. To test the REAL-type code path we inject
+    real annotations via __annotations__ after function definition.
+    """
+
+    def test_real_message_annotation_accepted(self):
+        """msg annotated with the real Message class -> accepted."""
+        def raw_handler(msg):  # noqa: ANN001
+            return None
+        raw_handler.__annotations__ = {"msg": Message}
+        decorated = message_handler(message_types=["real1"])(raw_handler)
+        assert decorated._gpmq_message_types == ["real1"]
+
+    def test_string_message_annotation_accepted(self):
+        """msg annotated with the string 'Message' -> accepted."""
+        def raw_handler(msg):  # noqa: ANN001
+            return None
+        raw_handler.__annotations__ = {"msg": "Message"}
+        decorated = message_handler(message_types=["str1"])(raw_handler)
+        assert decorated._gpmq_message_types == ["str1"]
+
+    def test_real_ctx_annotation_accepted(self):
+        """context annotated with real Optional[dict[str, Any]] -> accepted."""
+        from typing import Any, Optional
+        _ctx_type = Optional[dict[str, Any]]
+
+        def raw_handler(msg, context):  # noqa: ANN001
+            return None
+        raw_handler.__annotations__ = {"msg": Message, "context": _ctx_type}
+        decorated = message_handler(message_types=["real2"])(raw_handler)
+        assert decorated._gpmq_message_types == ["real2"]
+
+    def test_unannotated_params_accepted(self):
+        """Bare params with no annotations -> accepted (existing behavior)."""
+        @message_handler(message_types=["bare"])
+        def handler(msg, context=None):  # noqa: ANN001
+            return None
+        assert handler._gpmq_message_types == ["bare"]
+
+    def test_wrong_msg_annotation_rejected(self):
+        """msg annotated with a non-Message type -> rejected."""
+        with pytest.raises(TypeError):
+
+            @message_handler(message_types=["bad3"])
+            def handler(msg: int):
+                return None

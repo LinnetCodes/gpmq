@@ -51,6 +51,7 @@ You *can* edit the Redis settings in the `examples/` config templates and in `te
 
 ```python
 # myapp/handlers.py
+from __future__ import annotations
 from typing import Any, Optional
 from gpmq import message_handler, Message
 
@@ -242,6 +243,7 @@ embedded_publisher: "gpmq.publisher.embedded"
 Then in the handler, use the embedded publisher from context:
 
 ```python
+from __future__ import annotations
 @message_handler(["msg_ping"])
 def on_ping(msg: Message, context: Optional[dict[str, Any]] = None) -> Any:
     if context and "publisher" in context:
@@ -417,6 +419,7 @@ The function must:
 Handlers that accept two parameters receive the worker context as the second argument:
 
 ```python
+from __future__ import annotations
 from gpmq import message_handler, Message
 from typing import Any, Optional
 
