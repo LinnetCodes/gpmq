@@ -88,9 +88,10 @@ class TestSubscriberStart:
 
         with (
             patch("gpmq.storage.redis_adapter.RedisAdapter") as mock_redis_cls,
-            patch("gpmq.subscriber.handler.HandlerRegistry.load_handler"),
+            patch("gpmq.subscriber.handler.HandlerRegistry.load_handler") as mock_load,
             patch("gpmq.subscriber.worker_manager.WorkerManager"),
         ):
+            mock_load.return_value = handle_a
             mock_redis = MagicMock()
             mock_redis_cls.return_value = mock_redis
             sub = Subscriber(config)
@@ -165,9 +166,10 @@ class TestSubscriberStart:
 
         with (
             patch("gpmq.storage.redis_adapter.RedisAdapter") as mock_redis_cls,
-            patch("gpmq.subscriber.handler.HandlerRegistry.load_handler"),
+            patch("gpmq.subscriber.handler.HandlerRegistry.load_handler") as mock_load,
             patch("gpmq.subscriber.worker_manager.WorkerManager"),
         ):
+            mock_load.return_value = handle_x
             mock_redis = MagicMock()
             mock_redis_cls.return_value = mock_redis
             sub = Subscriber(config)
@@ -210,9 +212,10 @@ class TestSubscriberStart:
 
         with (
             patch("gpmq.storage.redis_adapter.RedisAdapter") as mock_redis_cls,
-            patch("gpmq.subscriber.handler.HandlerRegistry.load_handler"),
+            patch("gpmq.subscriber.handler.HandlerRegistry.load_handler") as mock_load,
             patch("gpmq.subscriber.worker_manager.WorkerManager"),
         ):
+            mock_load.return_value = handle_a
             mock_redis = MagicMock()
             mock_redis_cls.return_value = mock_redis
             # Let connect/register succeed, but make xgroup_create (a late step) raise.
@@ -252,9 +255,10 @@ class TestSubscriberStop:
 
         with (
             patch("gpmq.storage.redis_adapter.RedisAdapter") as mock_redis_cls,
-            patch("gpmq.subscriber.handler.HandlerRegistry.load_handler"),
+            patch("gpmq.subscriber.handler.HandlerRegistry.load_handler") as mock_load,
             patch("gpmq.subscriber.worker_manager.WorkerManager") as mock_wm_cls,
         ):
+            mock_load.return_value = handle_a
             mock_redis = MagicMock()
             mock_redis_cls.return_value = mock_redis
             mock_wm_instance = MagicMock()
@@ -304,9 +308,10 @@ class TestSubscriberGetStatus:
 
         with (
             patch("gpmq.storage.redis_adapter.RedisAdapter") as mock_redis_cls,
-            patch("gpmq.subscriber.handler.HandlerRegistry.load_handler"),
+            patch("gpmq.subscriber.handler.HandlerRegistry.load_handler") as mock_load,
             patch("gpmq.subscriber.worker_manager.WorkerManager"),
         ):
+            mock_load.return_value = handle_a
             mock_redis = MagicMock()
             mock_redis_cls.return_value = mock_redis
             sub = Subscriber(config)
@@ -347,9 +352,10 @@ class TestSubscriberRunForever:
 
         with (
             patch("gpmq.storage.redis_adapter.RedisAdapter") as mock_redis_cls,
-            patch("gpmq.subscriber.handler.HandlerRegistry.load_handler"),
+            patch("gpmq.subscriber.handler.HandlerRegistry.load_handler") as mock_load,
             patch("gpmq.subscriber.worker_manager.WorkerManager"),
         ):
+            mock_load.return_value = handle_a
             mock_redis = MagicMock()
             mock_redis_cls.return_value = mock_redis
 
@@ -384,10 +390,11 @@ class TestSubscriberRunForever:
 
         with (
             patch("gpmq.storage.redis_adapter.RedisAdapter"),
-            patch("gpmq.subscriber.handler.HandlerRegistry.load_handler"),
+            patch("gpmq.subscriber.handler.HandlerRegistry.load_handler") as mock_load,
             patch("gpmq.subscriber.worker_manager.WorkerManager"),
             patch("gpmq.subscriber.subscriber.time.sleep", side_effect=KeyboardInterrupt()),
         ):
+            mock_load.return_value = handle_a
             sub = Subscriber(config)
             sub.run_forever()
 
@@ -421,9 +428,10 @@ class TestSubscriberRunForever:
 
         with (
             patch("gpmq.storage.redis_adapter.RedisAdapter") as mock_redis_cls,
-            patch("gpmq.subscriber.handler.HandlerRegistry.load_handler"),
+            patch("gpmq.subscriber.handler.HandlerRegistry.load_handler") as mock_load,
             patch("gpmq.subscriber.worker_manager.WorkerManager"),
         ):
+            mock_load.return_value = handle_a
             mock_redis = MagicMock()
             mock_redis_cls.return_value = mock_redis
 
@@ -470,10 +478,11 @@ class TestSubscriberRunForever:
 
         with (
             patch("gpmq.storage.redis_adapter.RedisAdapter"),
-            patch("gpmq.subscriber.handler.HandlerRegistry.load_handler"),
+            patch("gpmq.subscriber.handler.HandlerRegistry.load_handler") as mock_load,
             patch("gpmq.subscriber.worker_manager.WorkerManager"),
             patch("gpmq.subscriber.subscriber.importlib.import_module") as mock_import,
         ):
+            mock_load.return_value = handle_a
             mock_module = MagicMock()
             mock_module.undecorated_func = mock_func
             mock_import.return_value = mock_module
@@ -506,9 +515,10 @@ class TestSubscriberRunForever:
 
         with (
             patch("gpmq.storage.redis_adapter.RedisAdapter") as mock_redis_cls,
-            patch("gpmq.subscriber.handler.HandlerRegistry.load_handler"),
+            patch("gpmq.subscriber.handler.HandlerRegistry.load_handler") as mock_load,
             patch("gpmq.subscriber.worker_manager.WorkerManager"),
         ):
+            mock_load.return_value = handle_a
             mock_redis = MagicMock()
             mock_redis_cls.return_value = mock_redis
 
@@ -519,3 +529,66 @@ class TestSubscriberRunForever:
             mock_redis.unregister_subscriber.assert_called_once()
 
         HandlerRegistry.clear()
+
+
+class TestValidateHandlerTypes:
+    """Unit tests for Subscriber._validate_handler_types() (3.4: per-handler)."""
+
+    def _make_subscriber(self):
+        """Build a Subscriber without going through start() (no Redis).
+
+        The config handlers here are only to satisfy SubscriberConfig's
+        min_length=1; _validate_handler_types ignores self._config.handlers
+        and validates only the loaded_handlers passed to it directly.
+        """
+        from gpmq.subscriber.subscriber import Subscriber
+        config = SubscriberConfig(
+            name="t",
+            handlers=[HandlerConfig(message_types=["_dummy_"], handler="mod.dummy")],
+            redis_host="127.0.0.1",
+            redis_port=6379,
+            redis_db=15,
+            redis_password="123456",
+            log_category="gpmq",
+        )
+        with patch("gpmq.storage.redis_adapter.RedisAdapter"):
+            return Subscriber(config)
+
+    def test_per_handler_type_validation_catches_overclaim(self):
+        """3.4: a handler config over-claiming a type its decorator didn't declare is caught (masking scenario)."""
+        from gpmq.subscriber.handler import message_handler
+        from gpmq.exceptions import HandlerTypeMismatchError
+
+        @message_handler(["type_a"])
+        def handler_a(msg):
+            return None
+
+        @message_handler(["type_b"])
+        def handler_b(msg):
+            return None
+
+        # handler_a's config over-claims type_b (which only handler_b declares).
+        cfg_a = HandlerConfig(message_types=["type_a", "type_b"], handler="mod.handler_a")
+        cfg_b = HandlerConfig(message_types=["type_b"], handler="mod.handler_b")
+
+        sub = self._make_subscriber()
+
+        with pytest.raises(HandlerTypeMismatchError) as exc_info:
+            sub._validate_handler_types([(cfg_a, handler_a), (cfg_b, handler_b)])
+        # The error names handler_a and the over-claimed type_b.
+        assert "type_b" in exc_info.value.conflict_types
+        assert exc_info.value.handler_path == "mod.handler_a"
+
+    def test_decorator_overclaim_is_not_an_error(self):
+        """3.4: reverse (decorator declares more than config uses) is NOT an error."""
+        from gpmq.subscriber.handler import message_handler
+
+        @message_handler(["type_a", "type_b"])  # declares both
+        def handler_a(msg):
+            return None
+
+        cfg_a = HandlerConfig(message_types=["type_a"], handler="mod.handler_a")  # uses only one
+
+        sub = self._make_subscriber()
+        sub._validate_handler_types([(cfg_a, handler_a)])  # must NOT raise
+

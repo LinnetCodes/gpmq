@@ -6,7 +6,8 @@ import importlib
 import threading
 import time
 import traceback
-from typing import TYPE_CHECKING
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
 
 from gpclog import GPCLogger
 from gpmq.exceptions import HandlerTypeMismatchError
@@ -68,11 +69,13 @@ class Subscriber:
             self._redis.connect()
 
             # Load handler functions
+            loaded_handlers: list[tuple[Any, Callable]] = []
             for handler_cfg in self._config.handlers:
-                HandlerRegistry.load_handler(handler_cfg.handler)
+                func = HandlerRegistry.load_handler(handler_cfg.handler)
+                loaded_handlers.append((handler_cfg, func))
 
             # Validate: config message_types must be subset of decorator-declared types
-            self._validate_handler_types()
+            self._validate_handler_types(loaded_handlers)
 
             # Register subscriber in Redis
             subscriber_info = {
@@ -202,21 +205,30 @@ class Subscriber:
             "worker_statuses": worker_statuses,
         }
 
-    def _validate_handler_types(self) -> None:
-        """Validate that config message_types are subset of decorator-declared types."""
-        from gpmq.subscriber.handler import HandlerRegistry
+    def _validate_handler_types(
+        self, loaded_handlers: list[tuple[Any, Callable]]
+    ) -> None:
+        """Validate each handler's config message_types is a subset of its
+        decorator-declared types (per-handler, not set-union).
 
-        all_registry_types = set(HandlerRegistry.get_all_handlers().keys())
-        config_types = set(self._config.get_message_types())
+        Args:
+            loaded_handlers: list of (handler_cfg, func) pairs from start().
 
-        if not config_types.issubset(all_registry_types):
-            missing = config_types - all_registry_types
-            raise HandlerTypeMismatchError(
-                handler_path="config",
-                declared_types=list(all_registry_types),
-                config_types=list(config_types),
-                conflict_types=list(missing),
-            )
+        Raises:
+            HandlerTypeMismatchError: if any handler config declares a type
+                its decorator did not register.
+        """
+        for handler_cfg, func in loaded_handlers:
+            declared = set(getattr(func, "_gpmq_message_types", []))
+            configured = set(handler_cfg.message_types)
+            over_claimed = configured - declared
+            if over_claimed:
+                raise HandlerTypeMismatchError(
+                    handler_path=handler_cfg.handler,
+                    declared_types=list(declared),
+                    config_types=list(configured),
+                    conflict_types=list(over_claimed),
+                )
 
     def _heartbeat_loop(self) -> None:
         """Periodically update heartbeat in Redis."""
