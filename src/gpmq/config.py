@@ -177,7 +177,7 @@ class SubscriberConfig(GPMQConfig):
         types: list[str] = []
         for handler in self.handlers:
             types.extend(handler.message_types)
-        return list(set(types))
+        return list(dict.fromkeys(types))
 
 
 # Auto-register config and classes with GPConfigManager
