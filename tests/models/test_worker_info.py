@@ -59,3 +59,77 @@ class TestConsumerGroupWorkers:
             workers=[],
         )
         assert group.worker_count == 0
+
+    def test_worker_count_equals_len_at_construction(self):
+        w1 = WorkerInfo(
+            worker_id="a-host-w0",
+            hostname="host",
+            pid=1,
+            started_at=1713500000.0,
+            last_heartbeat=1713500100.0,
+        )
+        w2 = WorkerInfo(
+            worker_id="a-host-w1",
+            hostname="host",
+            pid=2,
+            started_at=1713500000.0,
+            last_heartbeat=1713500100.0,
+        )
+        w3 = WorkerInfo(
+            worker_id="a-host-w2",
+            hostname="host",
+            pid=3,
+            started_at=1713500000.0,
+            last_heartbeat=1713500100.0,
+        )
+        group = ConsumerGroupWorkers(
+            subscriber_name="sub",
+            workers=[w1, w2, w3],
+        )
+        assert group.worker_count == len(group.workers) == 3
+
+    def test_worker_count_updates_after_append(self):
+        group = ConsumerGroupWorkers(
+            subscriber_name="sub",
+            workers=[],
+        )
+        assert group.worker_count == 0
+        group.workers.append(
+            WorkerInfo(
+                worker_id="sub-host-w0",
+                hostname="host",
+                pid=100,
+                started_at=1713500000.0,
+                last_heartbeat=1713500100.0,
+            )
+        )
+        # computed_field reflects the mutation (the old model_post_init would not)
+        assert group.worker_count == 1
+        group.workers.append(
+            WorkerInfo(
+                worker_id="sub-host-w1",
+                hostname="host",
+                pid=101,
+                started_at=1713500000.0,
+                last_heartbeat=1713500100.0,
+            )
+        )
+        assert group.worker_count == 2
+
+    def test_worker_count_in_model_dump(self):
+        group = ConsumerGroupWorkers(
+            subscriber_name="sub",
+            workers=[
+                WorkerInfo(
+                    worker_id="sub-host-w0",
+                    hostname="host",
+                    pid=100,
+                    started_at=1713500000.0,
+                    last_heartbeat=1713500100.0,
+                )
+            ],
+        )
+        dumped = group.model_dump()
+        assert "worker_count" in dumped
+        assert dumped["worker_count"] == 1
+

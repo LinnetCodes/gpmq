@@ -1,6 +1,6 @@
 """Worker info models for consumer group visibility."""
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field
 
 
 class WorkerInfo(BaseModel):
@@ -19,7 +19,9 @@ class ConsumerGroupWorkers(BaseModel):
 
     subscriber_name: str = Field(min_length=1, description="Subscriber / consumer group name")
     workers: list[WorkerInfo] = Field(default_factory=list, description="List of workers")
-    worker_count: int = Field(default=0, description="Number of workers")
 
-    def model_post_init(self, __context) -> None:
-        self.worker_count = len(self.workers)
+    @computed_field
+    @property
+    def worker_count(self) -> int:
+        """Number of workers (dynamically reflects len(workers))."""
+        return len(self.workers)
