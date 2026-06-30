@@ -71,7 +71,7 @@ class GPMQConfig(GPConfig):
 
     # Registry
     heartbeat_interval: int = Field(
-        default=10, ge=1, description="Heartbeat interval in seconds"
+        default=10, ge=5, description="Heartbeat interval in seconds (minimum 5; see validator)"
     )
     registry_key_prefix: str = Field(
         default="gpmq:", description="Redis key prefix for registry"
@@ -83,6 +83,27 @@ class GPMQConfig(GPConfig):
         """Auto-append trailing ':' if missing."""
         if v and not v.endswith(":"):
             v += ":"
+        return v
+
+    @field_validator("heartbeat_interval")
+    @classmethod
+    def _ensure_heartbeat_above_cadence(cls, v: int) -> int:
+        """Reject heartbeat_interval below 5.
+
+        Workers write their worker-level heartbeat on a hardcoded 5-second
+        cadence (worker.py heartbeat throttle). The 3.3 zombie-detection
+        threshold is heartbeat_interval * 3, so an interval below 5 would make
+        that threshold (interval*3) collapse to or below the cadence window,
+        causing healthy workers to be falsely flagged ERROR/stale. Enforcing a
+        minimum of 5 keeps the threshold (>=15s) comfortably above the cadence.
+        """
+        if v < 5:
+            raise ValueError(
+                f"heartbeat_interval must be >= 5 (got {v}); workers write their "
+                f"heartbeat on a hardcoded 5s cadence, and the stale-detection "
+                f"threshold is heartbeat_interval*3, so a smaller interval would "
+                f"falsely flag healthy workers as stale"
+            )
         return v
 
     # Audit

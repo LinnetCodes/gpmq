@@ -81,6 +81,15 @@ class TestGPMQConfig:
         with pytest.raises(Exception):  # Pydantic ValidationError
             GPMQConfig(redis_port=70000)
 
+    def test_heartbeat_interval_minimum(self):
+        """GPMQConfig should reject heartbeat_interval below 5 (cadence coupling)."""
+        with pytest.raises(Exception):  # Pydantic ValidationError / ValueError
+            GPMQConfig(heartbeat_interval=4)
+        # Boundary: 5 is accepted.
+        assert GPMQConfig(heartbeat_interval=5).heartbeat_interval == 5
+        # And the default 10 still works.
+        assert GPMQConfig().heartbeat_interval == 10
+
 
 class TestPublisherConfig:
     """Tests for PublisherConfig."""
