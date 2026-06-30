@@ -130,7 +130,8 @@ def test_audit_store_guards_are_inside_lock():
     guarded = [
         "save_message", "save_result",
         "query_by_type", "query_by_time_range", "query_by_status",
-        "query_by_correlation_id", "cleanup_by_time", "cleanup_by_type", "stats",
+        "query_by_correlation_id",
+        "cleanup_by_time", "cleanup_by_type", "cleanup_by_type_before", "stats",
     ]
     for name in guarded:
         src = inspect.getsource(getattr(AuditStore, name))
