@@ -242,7 +242,7 @@ class Worker(Process):
             )
             logger.debug(f"Read {len(messages)} messages from stream {self._stream_name}")
         except Exception:
-            logger.error("XREADGROUP failed for worker {}, group: {}, subscriber: {}, consumer: {}, stream: {} ",
+            logger.error("XREADGROUP failed for worker {}, subscriber: {}, consumer: {}, stream: {} ",
                          self._worker_id, self._subscriber_name, self.consumer_name, self._stream_name)
             logger.error("trace back: \n{}", traceback.format_exc())
             return
