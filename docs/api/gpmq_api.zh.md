@@ -703,7 +703,7 @@ def init_context(context: dict[str, Any]) -> dict[str, Any]:
 | `project_name` | `str` | 来自 GPConfigManager 的项目名 |
 | `subscriber_name` | `str` | 订阅者名称 |
 | `subscribe_message_types` | `list[str]` | 该订阅者处理的消息类型 |
-| `worker_id` | `str` | 如 `"data_loader-worker-0"` |
+| `worker_id` | `str` | 如 `"data_loader-server1-worker-0"` |
 | `worker_sn` | `int` | Worker 序号（0, 1, ...） |
 | `config_manager` | `GPConfigManager` | 配置管理器实例（如已初始化） |
 | `logger` | `GPCLogger` | 该 Worker 的日志实例 |

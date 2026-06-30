@@ -121,7 +121,7 @@ gpmq audit cleanup COMPONENT_NAME --before TIMESTAMP [OPTIONS]
 |-------------|------|------|
 | `COMPONENT_NAME` | 是 | Publisher 或 Subscriber 配置路径 |
 | `--before` | 是 | 删除此时间戳之前的记录，ISO 格式 |
-| `--type` | 否 | 按消息类型删除（指定时忽略 `--before`） |
+| `--type` | 否 | 按消息类型删除。指定后仅删除该类型中早于 `--before` 的记录（两个过滤条件同时生效） |
 | `--format` | `table` | 输出格式 |
 | `--config` | 否 | 配置文件夹路径 |
 

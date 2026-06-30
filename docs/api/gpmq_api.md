@@ -703,7 +703,7 @@ Decorator that marks a function as a worker context initializer. Called once per
 | `project_name` | `str` | From GPConfigManager |
 | `subscriber_name` | `str` | Subscriber name |
 | `subscribe_message_types` | `list[str]` | Message types handled |
-| `worker_id` | `str` | e.g. `"data_loader-worker-0"` |
+| `worker_id` | `str` | e.g. `"data_loader-server1-worker-0"` |
 | `worker_sn` | `int` | Worker serial number (0, 1, ...) |
 | `config_manager` | `GPConfigManager` | Config manager (if initialized) |
 | `logger` | `GPCLogger` | Logger for this worker |

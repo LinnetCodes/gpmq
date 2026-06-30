@@ -121,7 +121,7 @@ gpmq audit cleanup COMPONENT_NAME --before TIMESTAMP [OPTIONS]
 |-------------------|----------|-------------|
 | `COMPONENT_NAME` | Yes | Publisher or Subscriber config path |
 | `--before` | Yes | Delete records before this timestamp (ISO format) |
-| `--type` | No | Delete by message type (when specified, `--before` is ignored) |
+| `--type` | No | Delete by message type. When set, deletes only records of this type that are older than `--before` (both filters apply). |
 | `--format` | `table` | Output format |
 | `--config` | No | Configuration folder path |
 

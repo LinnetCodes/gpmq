@@ -322,6 +322,7 @@ log_category: "my_app_publisher"
 | `name` | str | *（必填）* | 订阅者名称（同时作为 Consumer Group 名称） |
 | `handlers` | list[HandlerConfig] | *（必填）* | 消息处理器配置列表 |
 | `workers` | int | `1` | Worker 进程数量 |
+| `worker_read_batch_size` | int | `1` | 每个 Worker 每轮 `XREADGROUP` 读取的消息数量 |
 | `subscriber_timeout` | float | `60.0` | 单个订阅者处理超时（秒） |
 | `embedded_publisher` | str \| null | `null` | 内嵌 Publisher 配置路径（用于消息转发） |
 | `worker_context_processor` | str \| null | `null` | Worker 上下文初始化函数的导入路径 |
@@ -482,7 +483,7 @@ def my_main_loop(subscriber: Subscriber, paras: Optional[dict[str, Any]]) -> Non
 
 ## CLI 参考
 
-> 详细的 CLI 使用说明请参阅 [docs/cli/gpmq_cli.zh-CN.md](docs/cli/gpmq_cli.zh-CN.md)。
+> 详细的 CLI 使用说明请参阅 [docs/cli/gpmq_cli.zh.md](docs/cli/gpmq_cli.zh.md)。
 
 ```
 gpmq [OPTIONS] COMMAND ...
@@ -507,7 +508,7 @@ gpmq-worker SUBSCRIBER_NAME [--config PATH]
 
 ## API 参考
 
-> 详细的 API 文档请参阅 [docs/api/gpmq_api.zh-CN.md](docs/api/gpmq_api.zh-CN.md)。
+> 详细的 API 文档请参阅 [docs/api/gpmq_api.zh.md](docs/api/gpmq_api.zh.md)。
 
 | 类 / 函数 | 说明 |
 |---|---|

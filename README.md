@@ -322,6 +322,7 @@ Extends `GPMQConfig`. Config file must include `cfg_class_name: "SubscriberConfi
 | `name` | str | *(required)* | Subscriber name (also consumer group name) |
 | `handlers` | list[HandlerConfig] | *(required)* | Message handler configurations |
 | `workers` | int | `1` | Number of worker processes |
+| `worker_read_batch_size` | int | `1` | Number of messages each worker reads per `XREADGROUP` round |
 | `subscriber_timeout` | float | `60.0` | Per-subscriber processing timeout (seconds) |
 | `embedded_publisher` | str \| null | `null` | Publisher config path for message relay |
 | `worker_context_processor` | str \| null | `null` | Import path to worker context init function |

@@ -80,5 +80,5 @@ with get_client("gpmq.publisher.main") as client:
 
 | 文档 | 说明 |
 |------|------|
-| [API 参考](api/gpmq_api.md) | 完整的 API 文档 |
-| [CLI 参考](cli/gpmq_cli.md) | 命令行工具使用说明 |
+| [API 参考](api/gpmq_api.zh.md) | 完整的 API 文档 |
+| [CLI 参考](cli/gpmq_cli.zh.md) | 命令行工具使用说明 |

@@ -25,6 +25,8 @@ from gpmq.models import (
     ProcessStatus,
     WorkerState,
     WorkerStatus,
+    WorkerInfo,
+    ConsumerGroupWorkers,
 )
 
 # Exceptions
@@ -79,6 +81,8 @@ __all__ = [
     "ProcessStatus",
     "WorkerState",
     "WorkerStatus",
+    "WorkerInfo",
+    "ConsumerGroupWorkers",
     # Exceptions
     "GPMQError",
     "RedisConnectionError",
