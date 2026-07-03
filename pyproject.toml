@@ -1,6 +1,6 @@
 [project]
 name = "gpmq"
-version = "0.4.0"
+dynamic = ["version"]
 description = "GPMQ (General Purpose Message Queue) - A lightweight Python distributed message queue built on Redis Streams, designed for personal projects and MVP (Minimum Viable Product) projects."
 readme = "README.md"
 license = "MIT"
@@ -71,6 +71,12 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/gpmq"]
+
+[tool.hatch.version]
+# Single source of truth: read the version from the package __init__.
+# Hatchling parses the file statically (no import/execution), so build-time
+# dependencies are not required.
+path = "src/gpmq/__init__.py"
 
 [tool.hatch.build.targets.sdist]
 # Runtime code + standard metadata + docs sources.
