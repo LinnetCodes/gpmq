@@ -38,7 +38,7 @@ dependencies = [
     "pydantic>=2.0.0",
     "click>=8.0.0",
     "gpconfig>=0.3.0",
-    "gpclog>=0.2.0",
+    "gpclog>=0.3.0",
 ]
 
 [project.urls]

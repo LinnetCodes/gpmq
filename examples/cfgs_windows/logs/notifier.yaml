@@ -12,8 +12,8 @@ output_to_stdout: true
 output_to_stderr: false
 output_to_file: true
 
-# 日志路径: auto | env | home | 绝对路径
-log_path: "C:\\temp\\gpmq\\logs"
+# 日志目录: auto | env | home | cwd | 绝对路径
+log_dir: "C:\\temp\\gpmq\\logs"
 
 # 日志轮转
 rotation_enabled: false
