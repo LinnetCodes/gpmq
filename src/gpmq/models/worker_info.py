@@ -9,7 +9,9 @@ class WorkerInfo(BaseModel):
     worker_id: str = Field(min_length=1, description="Unique worker identifier")
     hostname: str = Field(min_length=1, description="Host machine name")
     pid: int = Field(ge=0, description="Process ID")
-    status: str = Field(default="running", description="Worker status: running or stale")
+    status: str = Field(
+        default="running", description="Worker status: running or stale"
+    )
     started_at: float = Field(description="Unix timestamp when worker started")
     last_heartbeat: float = Field(description="Unix timestamp of last heartbeat")
 
@@ -17,8 +19,12 @@ class WorkerInfo(BaseModel):
 class ConsumerGroupWorkers(BaseModel):
     """Workers registered under a consumer group."""
 
-    subscriber_name: str = Field(min_length=1, description="Subscriber / consumer group name")
-    workers: list[WorkerInfo] = Field(default_factory=list, description="List of workers")
+    subscriber_name: str = Field(
+        min_length=1, description="Subscriber / consumer group name"
+    )
+    workers: list[WorkerInfo] = Field(
+        default_factory=list, description="List of workers"
+    )
 
     # computed_field wraps a bare method into a property; stacking it on an
     # explicit @property trips mypy's prop-decorator limitation.

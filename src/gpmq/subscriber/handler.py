@@ -20,7 +20,9 @@ _CTX_TYPE: Any = Optional[dict[str, Any]]
 MessageHandler = Callable[..., Any]
 
 
-def message_handler(message_types: list[str]) -> Callable[[MessageHandler], MessageHandler]:
+def message_handler(
+    message_types: list[str],
+) -> Callable[[MessageHandler], MessageHandler]:
     """Decorator that marks a function as a message handler.
 
     Attaches the declared message types as a ``_gpmq_message_types``
@@ -93,6 +95,7 @@ def message_handler(message_types: list[str]) -> Callable[[MessageHandler], Mess
 
         func._gpmq_message_types = message_types  # type: ignore[attr-defined]
         return func
+
     return decorator
 
 

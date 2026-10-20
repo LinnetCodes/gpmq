@@ -35,6 +35,7 @@ def get_logger(name: str = "gpmq", sn: Optional[int] = None) -> Any:
         A gpclog logger instance.
     """
     from gpmq import get_config_manager
+
     global _logger_cfg_folder_obj, _lookup_done
 
     _cfg_mgr = get_config_manager()

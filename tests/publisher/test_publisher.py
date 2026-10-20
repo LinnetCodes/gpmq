@@ -42,7 +42,9 @@ def publisher(mock_redis, mock_audit, mock_config) -> Publisher:
     return Publisher(mock_redis, mock_audit, mock_config)
 
 
-def _make_message(message_type: str = "test_type", publisher: str = "test_pub") -> Message:
+def _make_message(
+    message_type: str = "test_type", publisher: str = "test_pub"
+) -> Message:
     """Helper to create a test message."""
     return Message(
         id="pending",
@@ -94,7 +96,9 @@ class TestPublisherPublishMessage:
 
         mock_audit.save_message.assert_called_once_with(msg)
 
-    def test_creates_handler_with_matching_subscribers(self, publisher, mock_redis, mock_audit):
+    def test_creates_handler_with_matching_subscribers(
+        self, publisher, mock_redis, mock_audit
+    ):
         """Should create ResultHandler for subscribers matching message type."""
         mock_redis.xadd.return_value = "1234567890-0"
         mock_redis.get_active_subscribers.return_value = ["sub-a", "sub-b"]
@@ -348,9 +352,7 @@ class TestPublisherPublishMessageTargeting:
     def test_publish_message_uses_target_list_as_expected(self, publisher, mock_redis):
         """With target_subscribers set, ResultHandler should expect exactly the targets."""
         mock_redis.xadd.return_value = "111-0"
-        mock_redis.get_subscriber_info.return_value = {
-            "message_types": ["test_type"]
-        }
+        mock_redis.get_subscriber_info.return_value = {"message_types": ["test_type"]}
         # get_active_subscribers should NOT be consulted when targeting
         mock_redis.get_active_subscribers.return_value = ["sub-a", "sub-b", "sub-c"]
 
@@ -379,7 +381,9 @@ class TestPublisherPublishMessageTargeting:
 
         mock_redis.xadd.assert_not_called()
 
-    def test_publish_message_without_target_uses_legacy_path(self, publisher, mock_redis):
+    def test_publish_message_without_target_uses_legacy_path(
+        self, publisher, mock_redis
+    ):
         """No target_subscribers -> original _get_matching_subscribers path."""
         mock_redis.xadd.return_value = "222-0"
         mock_redis.get_active_subscribers.return_value = ["sub-a"]

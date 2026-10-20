@@ -22,6 +22,7 @@ def test_format_output_json():
 def test_format_output_yaml_rejected():
     """_format_output must reject the 'yaml' format (option was removed; never produced real YAML)."""
     import pytest
+
     data = [{"id": "1", "type": "test"}]
     with pytest.raises(ValueError):
         _format_output(data, "yaml")
@@ -72,7 +73,9 @@ def test_cli_with_config_before_subcommand(mock_init, mock_resolve, mock_get_sto
     mock_get_store.return_value.__exit__ = MagicMock(return_value=False)
 
     runner = CliRunner()
-    runner.invoke(cli, ["--config", "/some/path", "audit", "stats", "gpmq.subscribers.test"])
+    runner.invoke(
+        cli, ["--config", "/some/path", "audit", "stats", "gpmq.subscribers.test"]
+    )
     assert any(call.args == ("/some/path",) for call in mock_init.call_args_list)
 
 
@@ -88,7 +91,9 @@ def test_cli_with_config_after_subcommand(mock_init, mock_resolve, mock_get_stor
     mock_get_store.return_value.__exit__ = MagicMock(return_value=False)
 
     runner = CliRunner()
-    runner.invoke(cli, ["audit", "stats", "gpmq.subscribers.test", "--config", "/some/path"])
+    runner.invoke(
+        cli, ["audit", "stats", "gpmq.subscribers.test", "--config", "/some/path"]
+    )
     assert any(call.args == ("/some/path",) for call in mock_init.call_args_list)
 
 
@@ -186,7 +191,13 @@ def test_audit_cleanup_by_time(mock_init, mock_resolve, mock_get_store):
     runner = CliRunner()
     result = runner.invoke(
         cli,
-        ["audit", "cleanup", "gpmq.subscribers.test", "--before", "2026-01-01T00:00:00"],
+        [
+            "audit",
+            "cleanup",
+            "gpmq.subscribers.test",
+            "--before",
+            "2026-01-01T00:00:00",
+        ],
     )
     assert result.exit_code == 0
     mock_store.cleanup_by_time.assert_called_once()
@@ -467,7 +478,9 @@ def test_status_json_format(mock_init, mock_create_adapter):
 @patch("gpmq.cli._get_audit_store")
 @patch("gpmq.cli._resolve_audit_config")
 @patch("gpmq.cli._init_cfg_mgr")
-def test_audit_cleanup_handles_audit_storage_failure(mock_init, mock_resolve, mock_get_store):
+def test_audit_cleanup_handles_audit_storage_failure(
+    mock_init, mock_resolve, mock_get_store
+):
     """6.2: audit cleanup handles an audit-storage failure gracefully.
 
     The old test_audit_cleanup_connection_error patched _init_cfg_mgr (a
@@ -494,7 +507,13 @@ def test_audit_cleanup_handles_audit_storage_failure(mock_init, mock_resolve, mo
     runner = CliRunner()
     result = runner.invoke(
         cli,
-        ["audit", "cleanup", "gpmq.subscribers.test", "--before", "2026-01-01T00:00:00"],
+        [
+            "audit",
+            "cleanup",
+            "gpmq.subscribers.test",
+            "--before",
+            "2026-01-01T00:00:00",
+        ],
     )
     # The cleanup command does not wrap the store call in try/except, so the
     # raised exception propagates -> non-zero exit + the exception on result.

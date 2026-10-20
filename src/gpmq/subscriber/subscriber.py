@@ -43,7 +43,9 @@ class Subscriber:
         self._heartbeat_thread: threading.Thread | None = None
         self._heartbeat_stop = threading.Event()
         self._running = False
-        self._worker_ctx: dict[str, Any] = dict()  # worker context data that will be passed to worker processes
+        self._worker_ctx: dict[str, Any] = (
+            dict()
+        )  # worker context data that will be passed to worker processes
 
         global logger
         logger = get_logger(self.config.log_category)
@@ -103,7 +105,9 @@ class Subscriber:
             worker_ctx = dict(self._worker_ctx)
             worker_ctx["subscribe_message_types"] = self._config.get_message_types()
 
-            self._worker_manager = WorkerManager(config_dict, worker_ctx, redis_conn=self._redis)
+            self._worker_manager = WorkerManager(
+                config_dict, worker_ctx, redis_conn=self._redis
+            )
             self._worker_manager.start()
             self._running = True
 
@@ -242,4 +246,8 @@ class Subscriber:
                 if self._redis:
                     self._redis.update_heartbeat(self.name)
             except Exception:
-                logger.error("Heartbeat update failed for {}\n{}", self.name, traceback.format_exc())
+                logger.error(
+                    "Heartbeat update failed for {}\n{}",
+                    self.name,
+                    traceback.format_exc(),
+                )

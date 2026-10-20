@@ -71,7 +71,9 @@ class GPMQConfig(GPConfig):
 
     # Registry
     heartbeat_interval: int = Field(
-        default=10, ge=5, description="Heartbeat interval in seconds (minimum 5; see validator)"
+        default=10,
+        ge=5,
+        description="Heartbeat interval in seconds (minimum 5; see validator)",
     )
     registry_key_prefix: str = Field(
         default="gpmq:", description="Redis key prefix for registry"
@@ -166,13 +168,16 @@ class SubscriberConfig(GPMQConfig):
     )
     workers: int = Field(default=1, ge=1, description="Number of worker processes")
     worker_read_batch_size: int = Field(
-        default=1, ge=1, description="Number of messages each worker reads per XREADGROUP round"
+        default=1,
+        ge=1,
+        description="Number of messages each worker reads per XREADGROUP round",
     )
     subscriber_timeout: float = Field(
         default=60.0, ge=1.0, description="Subscriber processing timeout in seconds"
     )
     embedded_publisher: str | None = Field(
-        default=None, description="Publisher config path for embedded publisher in worker context"
+        default=None,
+        description="Publisher config path for embedded publisher in worker context",
     )
     worker_context_processor: str | None = Field(
         default=None, description="Import path to a worker context processor function"
@@ -181,10 +186,12 @@ class SubscriberConfig(GPMQConfig):
         default=None, description="Custom worker context data dict"
     )
     run_forever_method: Optional[str] = Field(
-        default=None, description="Import path to a run_forever_method decorated function"
+        default=None,
+        description="Import path to a run_forever_method decorated function",
     )
     run_forever_method_paras: Optional[dict[str, Any]] = Field(
-        default=None, description="Custom parameters dict passed to run_forever_method function's paras argument"
+        default=None,
+        description="Custom parameters dict passed to run_forever_method function's paras argument",
     )
 
     def get_message_types(self) -> list[str]:
@@ -207,7 +214,9 @@ GPConfigManager.register_config_class(PublisherConfig)
 GPConfigManager.register_config_class(SubscriberConfig)
 
 
-_gpmq_cfg_mgr: GPConfigManager | None = None  # keep a reference of initialized config manager instance
+_gpmq_cfg_mgr: GPConfigManager | None = (
+    None  # keep a reference of initialized config manager instance
+)
 
 
 def set_config_manager(cfg_mgr: GPConfigManager) -> None:
@@ -219,10 +228,12 @@ def set_config_manager(cfg_mgr: GPConfigManager) -> None:
     Args:
         cfg_mgr: an instance of GPConfigManager class
     """
-    global  _gpmq_cfg_mgr
+    global _gpmq_cfg_mgr
 
     if not isinstance(cfg_mgr, GPConfigManager):
-        raise TypeError(f"cfg_mgr must be an instance of GPConfigManager, not {type(cfg_mgr)}")
+        raise TypeError(
+            f"cfg_mgr must be an instance of GPConfigManager, not {type(cfg_mgr)}"
+        )
 
     _gpmq_cfg_mgr = cfg_mgr
 
@@ -279,13 +290,17 @@ def get_subscriber(cfg_path: str) -> "Subscriber":
     config = SubscriberConfig(**merged)
 
     subscriber = Subscriber(config)
-    subscriber.apply_worker_context(project_name=cfg_mgr.project_name, config_manager_folder_path=cfg_mgr.cfg_folder)
+    subscriber.apply_worker_context(
+        project_name=cfg_mgr.project_name, config_manager_folder_path=cfg_mgr.cfg_folder
+    )
 
     if config.embedded_publisher:
         subscriber.apply_worker_context(publisher_cfg_path=config.embedded_publisher)
 
     if config.worker_context_processor:
-        subscriber.apply_worker_context(worker_context_processor=config.worker_context_processor)
+        subscriber.apply_worker_context(
+            worker_context_processor=config.worker_context_processor
+        )
 
     if config.worker_context:
         subscriber.apply_worker_context(**config.worker_context)

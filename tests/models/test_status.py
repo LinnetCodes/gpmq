@@ -1,4 +1,5 @@
 """Tests for WorkerStatus and WorkerState models."""
+
 from datetime import datetime
 
 import pytest

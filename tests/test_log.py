@@ -8,6 +8,7 @@ from gpconfig import ConfigNotFoundError
 def _reset_log_globals():
     """Reset log module globals between tests."""
     from gpmq import log
+
     log._lookup_done = False
     log._logger_cfg_folder_obj = None
     yield

@@ -7,7 +7,9 @@ from gpmq.models.result import ProcessResult, ProcessStatus
 from gpmq.publisher.result_handler import ResultHandler
 
 
-def _make_result(message_id: str, subscriber_name: str, status: ProcessStatus = ProcessStatus.SUCCESS) -> dict:
+def _make_result(
+    message_id: str, subscriber_name: str, status: ProcessStatus = ProcessStatus.SUCCESS
+) -> dict:
     """Helper to create a result dict as it would arrive from Pub/Sub."""
     return ProcessResult(
         message_id=message_id,
@@ -84,8 +86,12 @@ class TestResultHandlerWait:
         # loop iter 2: 10.0 (remaining = 5.01 - 10.0 < 0, break)
         # elapsed: 10.0
         monotonic_values = iter([0.0, 0.01, 0.02, 10.0, 10.0])
-        with patch("gpmq.publisher.result_handler.time.monotonic", side_effect=monotonic_values):
-            handler = ResultHandler("msg-1", ["sub-a", "sub-b"], redis, key_prefix="gpmq:")
+        with patch(
+            "gpmq.publisher.result_handler.time.monotonic", side_effect=monotonic_values
+        ):
+            handler = ResultHandler(
+                "msg-1", ["sub-a", "sub-b"], redis, key_prefix="gpmq:"
+            )
             results = handler.wait(timeout=5.0)
 
         assert len(results) == 2
@@ -101,7 +107,9 @@ class TestResultHandlerWait:
         # __init__: 1 call (start_time), wait(): 1 (deadline),
         # loop: 1 (remaining check), elapsed: 1 (after loop)
         monotonic_values = iter([0.0, 0.01, 10.0, 10.0])
-        with patch("gpmq.publisher.result_handler.time.monotonic", side_effect=monotonic_values):
+        with patch(
+            "gpmq.publisher.result_handler.time.monotonic", side_effect=monotonic_values
+        ):
             handler = ResultHandler("msg-1", ["sub-a"], redis, key_prefix="gpmq:")
             results = handler.wait(timeout=5.0)
 
@@ -123,7 +131,9 @@ class TestResultHandlerWait:
         # __init__: 1 call (start_time), wait(): 1 (deadline),
         # loop: 1 (remaining check), elapsed: 1 (after loop)
         monotonic_values = iter([0.0, 0.01, 10.0, 10.0])
-        with patch("gpmq.publisher.result_handler.time.monotonic", side_effect=monotonic_values):
+        with patch(
+            "gpmq.publisher.result_handler.time.monotonic", side_effect=monotonic_values
+        ):
             handler = ResultHandler("msg-1", ["sub-a"], redis, key_prefix="gpmq:")
             handler.wait(timeout=5.0)
 
@@ -153,6 +163,7 @@ class TestResultHandlerWaitAny:
     def test_returns_on_first_result(self):
         """Should return as soon as ONE result arrives, not block till all/timeout."""
         import time as _time
+
         redis = MagicMock()
         redis.get_message.return_value = {"data": _make_result("msg-1", "sub-a")}
 
@@ -173,7 +184,9 @@ class TestResultHandlerWaitAny:
         # __init__: 1 call (start_time), wait_any(): 1 (deadline),
         # loop: 1 (remaining check)
         monotonic_values = iter([0.0, 0.01, 10.0])
-        with patch("gpmq.publisher.result_handler.time.monotonic", side_effect=monotonic_values):
+        with patch(
+            "gpmq.publisher.result_handler.time.monotonic", side_effect=monotonic_values
+        ):
             handler = ResultHandler("msg-1", ["sub-a"], redis, key_prefix="gpmq:")
             results = handler.wait_any(timeout=5.0)
 

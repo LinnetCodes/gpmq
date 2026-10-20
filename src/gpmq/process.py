@@ -1,4 +1,5 @@
 """Multiprocessing 启动策略：为 GPMQ worker 强制使用 spawn 语义。"""
+
 from __future__ import annotations
 
 import multiprocessing

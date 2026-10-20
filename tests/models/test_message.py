@@ -1,4 +1,5 @@
 """Tests for Message model."""
+
 from datetime import datetime
 
 import pytest

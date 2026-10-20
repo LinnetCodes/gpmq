@@ -73,7 +73,7 @@ class Publisher:
             subscriber_names=relevant_subs,
             redis_adapter=self._redis,
             key_prefix=self._config.registry_key_prefix,
-            audit_store=self._audit
+            audit_store=self._audit,
         )
 
         # Save to audit store
@@ -140,7 +140,7 @@ class Publisher:
             subscriber_names=subscriber_names,
             redis_adapter=self._redis,
             key_prefix=self._config.registry_key_prefix,
-            audit_store=self._audit
+            audit_store=self._audit,
         )
         return handler.wait(timeout=timeout)
 

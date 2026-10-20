@@ -128,10 +128,16 @@ def test_audit_store_guards_are_inside_lock():
     from gpmq.storage.audit_store import AuditStore
 
     guarded = [
-        "save_message", "save_result",
-        "query_by_type", "query_by_time_range", "query_by_status",
+        "save_message",
+        "save_result",
+        "query_by_type",
+        "query_by_time_range",
+        "query_by_status",
         "query_by_correlation_id",
-        "cleanup_by_time", "cleanup_by_type", "cleanup_by_type_before", "stats",
+        "cleanup_by_time",
+        "cleanup_by_type",
+        "cleanup_by_type_before",
+        "stats",
     ]
     for name in guarded:
         src = inspect.getsource(getattr(AuditStore, name))
@@ -150,12 +156,18 @@ def test_query_by_type(audit_store):
 
     # Add test messages
     msg1 = Message(
-        id="1-0", type="user_created", timestamp=datetime.now(timezone.utc),
-        publisher="test", payload={"id": 1}
+        id="1-0",
+        type="user_created",
+        timestamp=datetime.now(timezone.utc),
+        publisher="test",
+        payload={"id": 1},
     )
     msg2 = Message(
-        id="2-0", type="order_created", timestamp=datetime.now(timezone.utc),
-        publisher="test", payload={"id": 2}
+        id="2-0",
+        type="order_created",
+        timestamp=datetime.now(timezone.utc),
+        publisher="test",
+        payload={"id": 2},
     )
     audit_store.save_message(msg1)
     audit_store.save_message(msg2)
@@ -176,7 +188,9 @@ def test_query_by_time_range(audit_store):
     recent = now - timedelta(minutes=5)
 
     msg1 = Message(id="old-0", type="test", timestamp=old, publisher="test", payload={})
-    msg2 = Message(id="recent-0", type="test", timestamp=recent, publisher="test", payload={})
+    msg2 = Message(
+        id="recent-0", type="test", timestamp=recent, publisher="test", payload={}
+    )
     audit_store.save_message(msg1)
     audit_store.save_message(msg2)
 
@@ -191,12 +205,16 @@ def test_query_by_status(audit_store):
     from gpmq.models.result import ProcessStatus, ProcessResult
 
     result1 = ProcessResult(
-        message_id="1", status=ProcessStatus.SUCCESS,
-        subscriber_name="test", processing_time=0.5
+        message_id="1",
+        status=ProcessStatus.SUCCESS,
+        subscriber_name="test",
+        processing_time=0.5,
     )
     result2 = ProcessResult(
-        message_id="2", status=ProcessStatus.FAILURE,
-        subscriber_name="test", processing_time=0.5
+        message_id="2",
+        status=ProcessStatus.FAILURE,
+        subscriber_name="test",
+        processing_time=0.5,
     )
     audit_store.save_result("1", result1)
     audit_store.save_result("2", result2)
@@ -212,12 +230,20 @@ def test_query_by_correlation_id(audit_store):
     from gpmq.models.message import Message
 
     msg1 = Message(
-        id="1-0", type="test", timestamp=datetime.now(timezone.utc),
-        publisher="test", payload={}, correlation_id="chain-123"
+        id="1-0",
+        type="test",
+        timestamp=datetime.now(timezone.utc),
+        publisher="test",
+        payload={},
+        correlation_id="chain-123",
     )
     msg2 = Message(
-        id="2-0", type="test", timestamp=datetime.now(timezone.utc),
-        publisher="test", payload={}, correlation_id="chain-456"
+        id="2-0",
+        type="test",
+        timestamp=datetime.now(timezone.utc),
+        publisher="test",
+        payload={},
+        correlation_id="chain-456",
     )
     audit_store.save_message(msg1)
     audit_store.save_message(msg2)
@@ -235,8 +261,12 @@ def test_cleanup_by_time(audit_store):
     old = datetime.now(timezone.utc) - timedelta(hours=2)
     recent = datetime.now(timezone.utc) - timedelta(minutes=5)
 
-    msg_old = Message(id="old-0", type="test", timestamp=old, publisher="test", payload={})
-    msg_new = Message(id="new-0", type="test", timestamp=recent, publisher="test", payload={})
+    msg_old = Message(
+        id="old-0", type="test", timestamp=old, publisher="test", payload={}
+    )
+    msg_new = Message(
+        id="new-0", type="test", timestamp=recent, publisher="test", payload={}
+    )
     audit_store.save_message(msg_old)
     audit_store.save_message(msg_new)
 
@@ -255,8 +285,20 @@ def test_cleanup_by_type(audit_store):
     from datetime import datetime, timezone
     from gpmq.models.message import Message
 
-    msg1 = Message(id="1-0", type="type1", timestamp=datetime.now(timezone.utc), publisher="test", payload={})
-    msg2 = Message(id="2-0", type="type2", timestamp=datetime.now(timezone.utc), publisher="test", payload={})
+    msg1 = Message(
+        id="1-0",
+        type="type1",
+        timestamp=datetime.now(timezone.utc),
+        publisher="test",
+        payload={},
+    )
+    msg2 = Message(
+        id="2-0",
+        type="type2",
+        timestamp=datetime.now(timezone.utc),
+        publisher="test",
+        payload={},
+    )
     audit_store.save_message(msg1)
     audit_store.save_message(msg2)
 
@@ -285,24 +327,40 @@ def test_cleanup_by_type_before(audit_store):
     new_ts = cutoff + timedelta(minutes=30)
 
     # type_a: one older (delete) + one newer (keep)
-    a_old = Message(id="a-old-0", type="type_a", timestamp=old_ts, publisher="t", payload={})
-    a_new = Message(id="a-new-0", type="type_a", timestamp=new_ts, publisher="t", payload={})
+    a_old = Message(
+        id="a-old-0", type="type_a", timestamp=old_ts, publisher="t", payload={}
+    )
+    a_new = Message(
+        id="a-new-0", type="type_a", timestamp=new_ts, publisher="t", payload={}
+    )
     # type_b: any time (keep)
-    b_msg = Message(id="b-0", type="type_b", timestamp=old_ts, publisher="t", payload={})
+    b_msg = Message(
+        id="b-0", type="type_b", timestamp=old_ts, publisher="t", payload={}
+    )
 
     audit_store.save_message(a_old)
     audit_store.save_message(a_new)
     audit_store.save_message(b_msg)
 
     # Results for each message (results deleted before their messages for FK).
-    audit_store.save_result("a-old-0", ProcessResult(
-        message_id="a-old-0", status=ProcessStatus.SUCCESS,
-        subscriber_name="sub", processing_time=0.1,
-    ))
-    audit_store.save_result("a-new-0", ProcessResult(
-        message_id="a-new-0", status=ProcessStatus.SUCCESS,
-        subscriber_name="sub", processing_time=0.1,
-    ))
+    audit_store.save_result(
+        "a-old-0",
+        ProcessResult(
+            message_id="a-old-0",
+            status=ProcessStatus.SUCCESS,
+            subscriber_name="sub",
+            processing_time=0.1,
+        ),
+    )
+    audit_store.save_result(
+        "a-new-0",
+        ProcessResult(
+            message_id="a-new-0",
+            status=ProcessStatus.SUCCESS,
+            subscriber_name="sub",
+            processing_time=0.1,
+        ),
+    )
 
     count = audit_store.cleanup_by_type_before("type_a", cutoff)
 
@@ -331,16 +389,26 @@ def test_stats(audit_store):
     from gpmq.models.result import ProcessStatus, ProcessResult
 
     # Add test data
-    msg = Message(id="1-0", type="test", timestamp=datetime.now(timezone.utc), publisher="test", payload={})
+    msg = Message(
+        id="1-0",
+        type="test",
+        timestamp=datetime.now(timezone.utc),
+        publisher="test",
+        payload={},
+    )
     audit_store.save_message(msg)
 
     result1 = ProcessResult(
-        message_id="1", status=ProcessStatus.SUCCESS,
-        subscriber_name="sub_a", processing_time=0.5
+        message_id="1",
+        status=ProcessStatus.SUCCESS,
+        subscriber_name="sub_a",
+        processing_time=0.5,
     )
     result2 = ProcessResult(
-        message_id="1", status=ProcessStatus.FAILURE,
-        subscriber_name="sub_b", processing_time=0.5
+        message_id="1",
+        status=ProcessStatus.FAILURE,
+        subscriber_name="sub_b",
+        processing_time=0.5,
     )
     audit_store.save_result("1", result1)
     audit_store.save_result("1", result2)
@@ -370,8 +438,11 @@ def test_large_payload(audit_store):
 
     large_payload = {"data": "x" * 10000}
     msg = Message(
-        id="large-0", type="test", timestamp=datetime.now(timezone.utc),
-        publisher="test", payload=large_payload
+        id="large-0",
+        type="test",
+        timestamp=datetime.now(timezone.utc),
+        publisher="test",
+        payload=large_payload,
     )
     audit_store.save_message(msg)
 
@@ -404,34 +475,64 @@ def test_save_result_real_overwrites_timeout(audit_store):
     """1.2 case 1: a real result (SUCCESS) arriving after a TIMEOUT row overwrites it."""
     from gpmq.models.result import ProcessResult, ProcessStatus
 
-    audit_store.save_result("p1", ProcessResult(
-        message_id="p1", status=ProcessStatus.TIMEOUT,
-        subscriber_name="sub", processing_time=5.0, timeout_seconds=5.0,
-    ))
-    audit_store.save_result("p1", ProcessResult(
-        message_id="p1", status=ProcessStatus.SUCCESS,
-        subscriber_name="sub", processing_time=0.2,
-    ))
+    audit_store.save_result(
+        "p1",
+        ProcessResult(
+            message_id="p1",
+            status=ProcessStatus.TIMEOUT,
+            subscriber_name="sub",
+            processing_time=5.0,
+            timeout_seconds=5.0,
+        ),
+    )
+    audit_store.save_result(
+        "p1",
+        ProcessResult(
+            message_id="p1",
+            status=ProcessStatus.SUCCESS,
+            subscriber_name="sub",
+            processing_time=0.2,
+        ),
+    )
 
-    assert [r["status"] for r in audit_store.query_by_status(ProcessStatus.SUCCESS)] == ["success"]
-    assert [r["status"] for r in audit_store.query_by_status(ProcessStatus.TIMEOUT)] == []
+    assert [
+        r["status"] for r in audit_store.query_by_status(ProcessStatus.SUCCESS)
+    ] == ["success"]
+    assert [
+        r["status"] for r in audit_store.query_by_status(ProcessStatus.TIMEOUT)
+    ] == []
 
 
 def test_save_result_timeout_after_real_is_ignored(audit_store):
     """1.2 case 3: a late TIMEOUT arriving after a real result is silently ignored."""
     from gpmq.models.result import ProcessResult, ProcessStatus
 
-    audit_store.save_result("p2", ProcessResult(
-        message_id="p2", status=ProcessStatus.SUCCESS,
-        subscriber_name="sub", processing_time=0.2,
-    ))
-    audit_store.save_result("p2", ProcessResult(
-        message_id="p2", status=ProcessStatus.TIMEOUT,
-        subscriber_name="sub", processing_time=5.0, timeout_seconds=5.0,
-    ))
+    audit_store.save_result(
+        "p2",
+        ProcessResult(
+            message_id="p2",
+            status=ProcessStatus.SUCCESS,
+            subscriber_name="sub",
+            processing_time=0.2,
+        ),
+    )
+    audit_store.save_result(
+        "p2",
+        ProcessResult(
+            message_id="p2",
+            status=ProcessStatus.TIMEOUT,
+            subscriber_name="sub",
+            processing_time=5.0,
+            timeout_seconds=5.0,
+        ),
+    )
 
-    assert [r["status"] for r in audit_store.query_by_status(ProcessStatus.SUCCESS)] == ["success"]
-    assert [r["status"] for r in audit_store.query_by_status(ProcessStatus.TIMEOUT)] == []
+    assert [
+        r["status"] for r in audit_store.query_by_status(ProcessStatus.SUCCESS)
+    ] == ["success"]
+    assert [
+        r["status"] for r in audit_store.query_by_status(ProcessStatus.TIMEOUT)
+    ] == []
 
 
 def test_save_result_real_vs_real_raises(audit_store):
@@ -439,31 +540,57 @@ def test_save_result_real_vs_real_raises(audit_store):
     import pytest
     from gpmq.models.result import ProcessResult, ProcessStatus
 
-    audit_store.save_result("p3", ProcessResult(
-        message_id="p3", status=ProcessStatus.SUCCESS,
-        subscriber_name="sub", processing_time=0.2,
-    ))
+    audit_store.save_result(
+        "p3",
+        ProcessResult(
+            message_id="p3",
+            status=ProcessStatus.SUCCESS,
+            subscriber_name="sub",
+            processing_time=0.2,
+        ),
+    )
     with pytest.raises(Exception):
-        audit_store.save_result("p3", ProcessResult(
-            message_id="p3", status=ProcessStatus.FAILURE,
-            subscriber_name="sub", processing_time=0.3,
-        ))
+        audit_store.save_result(
+            "p3",
+            ProcessResult(
+                message_id="p3",
+                status=ProcessStatus.FAILURE,
+                subscriber_name="sub",
+                processing_time=0.3,
+            ),
+        )
 
 
 def test_save_result_exception_overwrites_timeout(audit_store):
     """1.2 + 1.1 linkage: an EXCEPTION result (poison-message) overwrites a TIMEOUT."""
     from gpmq.models.result import ProcessResult, ProcessStatus
 
-    audit_store.save_result("p4", ProcessResult(
-        message_id="p4", status=ProcessStatus.TIMEOUT,
-        subscriber_name="sub", processing_time=5.0, timeout_seconds=5.0,
-    ))
-    audit_store.save_result("p4", ProcessResult(
-        message_id="p4", status=ProcessStatus.EXCEPTION,
-        subscriber_name="sub", processing_time=0.0, error_message="poison",
-    ))
-    assert [r["status"] for r in audit_store.query_by_status(ProcessStatus.EXCEPTION)] == ["exception"]
-    assert [r["status"] for r in audit_store.query_by_status(ProcessStatus.TIMEOUT)] == []
+    audit_store.save_result(
+        "p4",
+        ProcessResult(
+            message_id="p4",
+            status=ProcessStatus.TIMEOUT,
+            subscriber_name="sub",
+            processing_time=5.0,
+            timeout_seconds=5.0,
+        ),
+    )
+    audit_store.save_result(
+        "p4",
+        ProcessResult(
+            message_id="p4",
+            status=ProcessStatus.EXCEPTION,
+            subscriber_name="sub",
+            processing_time=0.0,
+            error_message="poison",
+        ),
+    )
+    assert [
+        r["status"] for r in audit_store.query_by_status(ProcessStatus.EXCEPTION)
+    ] == ["exception"]
+    assert [
+        r["status"] for r in audit_store.query_by_status(ProcessStatus.TIMEOUT)
+    ] == []
 
 
 def test_save_message_dedup_same_id(audit_store):
@@ -494,14 +621,25 @@ def test_save_result_dedup_same_message_and_subscriber(audit_store):
     """
     from gpmq.models.result import ProcessStatus, ProcessResult
 
-    audit_store.save_result("msg-1", ProcessResult(
-        message_id="msg-1", status=ProcessStatus.SUCCESS,
-        subscriber_name="sub_a", processing_time=0.5,
-    ))
-    audit_store.save_result("msg-1", ProcessResult(
-        message_id="msg-1", status=ProcessStatus.TIMEOUT,
-        subscriber_name="sub_a", processing_time=5.0, timeout_seconds=5.0,
-    ))  # ignored — no dup row
+    audit_store.save_result(
+        "msg-1",
+        ProcessResult(
+            message_id="msg-1",
+            status=ProcessStatus.SUCCESS,
+            subscriber_name="sub_a",
+            processing_time=0.5,
+        ),
+    )
+    audit_store.save_result(
+        "msg-1",
+        ProcessResult(
+            message_id="msg-1",
+            status=ProcessStatus.TIMEOUT,
+            subscriber_name="sub_a",
+            processing_time=5.0,
+            timeout_seconds=5.0,
+        ),
+    )  # ignored — no dup row
 
     stats = audit_store.stats()
     assert stats["total_results"] == 1
@@ -512,12 +650,16 @@ def test_save_result_different_subscribers_not_deduped(audit_store):
     from gpmq.models.result import ProcessStatus, ProcessResult
 
     r1 = ProcessResult(
-        message_id="msg-1", status=ProcessStatus.SUCCESS,
-        subscriber_name="sub_a", processing_time=0.5,
+        message_id="msg-1",
+        status=ProcessStatus.SUCCESS,
+        subscriber_name="sub_a",
+        processing_time=0.5,
     )
     r2 = ProcessResult(
-        message_id="msg-1", status=ProcessStatus.SUCCESS,
-        subscriber_name="sub_b", processing_time=0.3,
+        message_id="msg-1",
+        status=ProcessStatus.SUCCESS,
+        subscriber_name="sub_b",
+        processing_time=0.3,
     )
     audit_store.save_result("msg-1", r1)
     audit_store.save_result("msg-1", r2)
@@ -595,8 +737,11 @@ def test_concurrent_mixed_read_write(audit_store):
     # Pre-populate some data
     for i in range(5):
         msg = Message(
-            id=f"pre-{i}", type="test", timestamp=datetime.now(timezone.utc),
-            publisher="test", payload={},
+            id=f"pre-{i}",
+            type="test",
+            timestamp=datetime.now(timezone.utc),
+            publisher="test",
+            payload={},
         )
         audit_store.save_message(msg)
 
@@ -735,9 +880,12 @@ class TestAuditStoreLazyConnect:
 
         store = AuditStore(temp_db_path)
         assert store.query_by_type("test") == []
-        assert store.query_by_time_range(
-            datetime.now(timezone.utc), datetime.now(timezone.utc)
-        ) == []
+        assert (
+            store.query_by_time_range(
+                datetime.now(timezone.utc), datetime.now(timezone.utc)
+            )
+            == []
+        )
         assert store.query_by_status(ProcessStatus.SUCCESS) == []
         assert store.query_by_correlation_id("abc") == []
         store.close()
@@ -765,7 +913,3 @@ class TestAuditStoreLazyConnect:
         assert store.cleanup_by_time(datetime.now(timezone.utc)) == 0
         assert store.cleanup_by_type("test") == 0
         store.close()
-
-
-
-

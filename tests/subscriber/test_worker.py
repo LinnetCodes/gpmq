@@ -595,9 +595,9 @@ class TestWorkerContextProcessorLoading:
                 hostname="test-host",
                 config_dict=config_dict,
             )
-            worker.prepare_worker_context({
-                "worker_context_processor": f"{mod_name}.my_processor"
-            })
+            worker.prepare_worker_context(
+                {"worker_context_processor": f"{mod_name}.my_processor"}
+            )
             assert worker._ctx_proc_func is my_processor
             assert worker._worker_ctx.get("custom_key") == "custom_value"
         finally:
@@ -622,9 +622,9 @@ class TestWorkerContextProcessorLoading:
                 config_dict=config_dict,
             )
             with pytest.raises(TypeError, match="@worker_context_processor"):
-                worker.prepare_worker_context({
-                    "worker_context_processor": f"{mod_name}.my_processor"
-                })
+                worker.prepare_worker_context(
+                    {"worker_context_processor": f"{mod_name}.my_processor"}
+                )
         finally:
             del sys.modules[mod_name]
 
@@ -658,9 +658,9 @@ class TestWorkerContextProcessorLoading:
             config_dict=config_dict,
         )
         with pytest.raises(ImportError):
-            worker.prepare_worker_context({
-                "worker_context_processor": "nonexistent.module.func"
-            })
+            worker.prepare_worker_context(
+                {"worker_context_processor": "nonexistent.module.func"}
+            )
 
 
 class TestWorkerTargetSubscribersFilter:
@@ -751,6 +751,7 @@ class TestWorkerPoisonMessage:
     def _make_worker(self):
         from gpmq.config import SubscriberConfig
         from gpmq.subscriber.worker import Worker
+
         config_dict = _make_subscriber_config(message_types=["order_created"])
         config = SubscriberConfig(**config_dict)
         worker = Worker(
@@ -777,7 +778,9 @@ class TestWorkerPoisonMessage:
         }
         worker._process_message("bad-1", fields, handler)  # must not raise
         handler.assert_not_called()
-        worker._redis.xack.assert_called_once_with("gpmq:messages", "test-subscriber", "bad-1")
+        worker._redis.xack.assert_called_once_with(
+            "gpmq:messages", "test-subscriber", "bad-1"
+        )
         worker._redis.publish.assert_called_once()
         result = worker._redis.publish.call_args[0][1]
         assert result["status"] == "exception"
@@ -802,7 +805,9 @@ class TestWorkerPoisonMessage:
         }
         worker._process_message("bad-2", fields, handler)
         handler.assert_not_called()
-        worker._redis.xack.assert_called_once_with("gpmq:messages", "test-subscriber", "bad-2")
+        worker._redis.xack.assert_called_once_with(
+            "gpmq:messages", "test-subscriber", "bad-2"
+        )
         worker._redis.publish.assert_called_once()
 
     def test_invalid_timestamp_does_not_crash(self):
@@ -811,13 +816,15 @@ class TestWorkerPoisonMessage:
         handler = MagicMock()
         fields = {
             "type": "order_created",
-            "timestamp": "",   # empty string fails datetime parse
+            "timestamp": "",  # empty string fails datetime parse
             "publisher": "pub",
             "payload": json.dumps({"k": 1}),
         }
         worker._process_message("bad-3", fields, handler)
         handler.assert_not_called()
-        worker._redis.xack.assert_called_once_with("gpmq:messages", "test-subscriber", "bad-3")
+        worker._redis.xack.assert_called_once_with(
+            "gpmq:messages", "test-subscriber", "bad-3"
+        )
 
     def test_missing_required_fields_does_not_crash(self):
         """Missing type/publisher/timestamp -> Message construction fails -> poison."""
@@ -826,15 +833,21 @@ class TestWorkerPoisonMessage:
         fields = {"payload": json.dumps({"k": 1})}  # no type/publisher/timestamp
         worker._process_message("bad-4", fields, handler)
         handler.assert_not_called()
-        worker._redis.xack.assert_called_once_with("gpmq:messages", "test-subscriber", "bad-4")
+        worker._redis.xack.assert_called_once_with(
+            "gpmq:messages", "test-subscriber", "bad-4"
+        )
 
     def test_ack_failure_does_not_crash_worker(self):
         """If xack raises during poison handling, worker still does not crash."""
         worker = self._make_worker()
         worker._redis.xack.side_effect = RuntimeError("redis down")
         handler = MagicMock()
-        fields = {"type": "order_created", "timestamp": datetime.now(timezone.utc).isoformat(),
-                  "publisher": "pub", "payload": "not json"}
+        fields = {
+            "type": "order_created",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "publisher": "pub",
+            "payload": "not json",
+        }
         worker._process_message("bad-5", fields, handler)  # must not raise
         worker._redis.xack.assert_called_once()
         # publish NOT called because ACK failed and we returned early
@@ -845,8 +858,12 @@ class TestWorkerPoisonMessage:
         worker = self._make_worker()
         worker._audit = None
         handler = MagicMock()
-        fields = {"type": "order_created", "timestamp": datetime.now(timezone.utc).isoformat(),
-                  "publisher": "pub", "payload": "not json"}
+        fields = {
+            "type": "order_created",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "publisher": "pub",
+            "payload": "not json",
+        }
         worker._process_message("bad-6", fields, handler)
         worker._redis.xack.assert_called_once()
         worker._redis.publish.assert_called_once()
@@ -879,7 +896,9 @@ class TestWorkerPoisonMessage:
         worker._process_message("bad-1", poison_fields, valid_handler)  # must not raise
 
         # Second: a valid message of the same type.
-        good_id, good_fields = _make_stream_message(msg_id="good-1", msg_type="order_created")
+        good_id, good_fields = _make_stream_message(
+            msg_id="good-1", msg_type="order_created"
+        )
         worker._process_message(good_id, good_fields, valid_handler)  # must not raise
 
         # The handler was called exactly once — for the valid message, NOT the poison one.
@@ -896,6 +915,7 @@ class TestWorkerReadBatch:
     def _make_worker(self, read_batch_size: int):
         from gpmq.config import SubscriberConfig
         from gpmq.subscriber.worker import Worker
+
         config_dict = _make_subscriber_config(message_types=["order_created"])
         config_dict["worker_read_batch_size"] = read_batch_size
         config = SubscriberConfig(**config_dict)
@@ -916,16 +936,26 @@ class TestWorkerReadBatch:
         worker = self._make_worker(read_batch_size=3)
 
         from gpmq.subscriber.handler import HandlerRegistry
+
         HandlerRegistry.clear()
         mock_handler = MagicMock()
         try:
             HandlerRegistry._handlers["order_created"] = mock_handler
             # Return a batch of 3 messages.
-            m1_id, m1_fields = _make_stream_message(msg_id="m1", msg_type="order_created")
-            m2_id, m2_fields = _make_stream_message(msg_id="m2", msg_type="order_created")
-            m3_id, m3_fields = _make_stream_message(msg_id="m3", msg_type="order_created")
+            m1_id, m1_fields = _make_stream_message(
+                msg_id="m1", msg_type="order_created"
+            )
+            m2_id, m2_fields = _make_stream_message(
+                msg_id="m2", msg_type="order_created"
+            )
+            m3_id, m3_fields = _make_stream_message(
+                msg_id="m3", msg_type="order_created"
+            )
             worker._redis.xreadgroup.return_value = [
-                ("gpmq:messages", [(m1_id, m1_fields), (m2_id, m2_fields), (m3_id, m3_fields)]),
+                (
+                    "gpmq:messages",
+                    [(m1_id, m1_fields), (m2_id, m2_fields), (m3_id, m3_fields)],
+                ),
             ]
             worker._read_and_process()
 
@@ -942,6 +972,7 @@ class TestWorkerReadBatch:
         worker = self._make_worker(read_batch_size=2)
 
         from gpmq.subscriber.handler import HandlerRegistry
+
         HandlerRegistry.clear()
         mock_handler = MagicMock(return_value={"ok": True})
         try:
@@ -953,7 +984,9 @@ class TestWorkerReadBatch:
                 "publisher": "pub",
                 "payload": "this is not json {{{",
             }
-            good_id, good_fields = _make_stream_message(msg_id="good-1", msg_type="order_created")
+            good_id, good_fields = _make_stream_message(
+                msg_id="good-1", msg_type="order_created"
+            )
             worker._redis.xreadgroup.return_value = [
                 ("gpmq:messages", [("bad-1", poison_fields), (good_id, good_fields)]),
             ]

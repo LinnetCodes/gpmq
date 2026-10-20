@@ -15,7 +15,9 @@ class TestRunForeverMethodDecorator:
         from gpmq.subscriber.decorators import run_forever_method
 
         @run_forever_method
-        def my_run_forever(subscriber: Subscriber, paras: Optional[dict[str, Any]]) -> None:
+        def my_run_forever(
+            subscriber: Subscriber, paras: Optional[dict[str, Any]]
+        ) -> None:
             pass
 
         assert getattr(my_run_forever, "_gpmq_run_forever", False) is True
@@ -35,6 +37,7 @@ class TestRunForeverMethodDecorator:
         from gpmq.subscriber.decorators import run_forever_method
 
         with pytest.raises(TypeError, match="must accept exactly 2 parameters"):
+
             @run_forever_method
             def my_run_forever():
                 pass
@@ -44,6 +47,7 @@ class TestRunForeverMethodDecorator:
         from gpmq.subscriber.decorators import run_forever_method
 
         with pytest.raises(TypeError, match="must accept exactly 2 parameters"):
+
             @run_forever_method
             def my_run_forever(subscriber):
                 pass
@@ -53,6 +57,7 @@ class TestRunForeverMethodDecorator:
         from gpmq.subscriber.decorators import run_forever_method
 
         with pytest.raises(TypeError, match="must accept exactly 2 parameters"):
+
             @run_forever_method
             def my_run_forever(subscriber, paras, extra):
                 pass
@@ -62,6 +67,7 @@ class TestRunForeverMethodDecorator:
         from gpmq.subscriber.decorators import run_forever_method
 
         with pytest.raises(TypeError, match="must be named 'paras'"):
+
             @run_forever_method
             def my_run_forever(subscriber, config):
                 pass
@@ -71,15 +77,20 @@ class TestRunForeverMethodDecorator:
         from gpmq.subscriber.decorators import run_forever_method
 
         with pytest.raises(TypeError, match="return annotation must be None"):
+
             @run_forever_method
-            def my_run_forever(subscriber: Subscriber, paras: Optional[dict[str, Any]]) -> str:
+            def my_run_forever(
+                subscriber: Subscriber, paras: Optional[dict[str, Any]]
+            ) -> str:
                 return "ok"
 
     def test_returns_original_function(self):
         """Should return the original function unchanged."""
         from gpmq.subscriber.decorators import run_forever_method
 
-        def my_run_forever(subscriber: Subscriber, paras: Optional[dict[str, Any]]) -> None:
+        def my_run_forever(
+            subscriber: Subscriber, paras: Optional[dict[str, Any]]
+        ) -> None:
             pass
 
         decorated = run_forever_method(my_run_forever)
@@ -99,7 +110,10 @@ class TestRunForeverMethodDecorator:
         """Should reject function whose first param is not named 'subscriber'."""
         from gpmq.subscriber.decorators import run_forever_method
 
-        with pytest.raises(TypeError, match="first parameter must be named 'subscriber'"):
+        with pytest.raises(
+            TypeError, match="first parameter must be named 'subscriber'"
+        ):
+
             @run_forever_method
             def my_run_forever(conn, paras):
                 pass
@@ -109,6 +123,7 @@ class TestRunForeverMethodDecorator:
         from gpmq.subscriber.decorators import run_forever_method
 
         with pytest.raises(TypeError, match="annotation must be Subscriber"):
+
             @run_forever_method
             def my_run_forever(subscriber: int, paras):
                 pass

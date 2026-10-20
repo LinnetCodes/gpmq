@@ -187,7 +187,10 @@ class AuditStore:
             }
             if existing is not None:
                 existing_status = existing["status"]
-                if existing_status == ProcessStatus.TIMEOUT.value and new_status in real_statuses:
+                if (
+                    existing_status == ProcessStatus.TIMEOUT.value
+                    and new_status in real_statuses
+                ):
                     action = "overwrite"
                 elif existing_status in real_statuses and new_status in real_statuses:
                     raise RuntimeError(
@@ -195,7 +198,10 @@ class AuditStore:
                         f"subscriber={result.subscriber_name!r}: "
                         f"existing={existing_status!r}, new={new_status!r}"
                     )
-                elif existing_status in real_statuses and new_status == ProcessStatus.TIMEOUT.value:
+                elif (
+                    existing_status in real_statuses
+                    and new_status == ProcessStatus.TIMEOUT.value
+                ):
                     # Late TIMEOUT after a real result already stored — ignore.
                     return
                 else:
@@ -307,7 +313,9 @@ class AuditStore:
             )
             return [dict(row) for row in cursor.fetchall()]
 
-    def query_by_status(self, status: ProcessStatus, limit: int = 100) -> list[dict[str, Any]]:
+    def query_by_status(
+        self, status: ProcessStatus, limit: int = 100
+    ) -> list[dict[str, Any]]:
         """Query results by status.
 
         Args:

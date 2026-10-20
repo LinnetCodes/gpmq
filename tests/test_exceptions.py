@@ -124,7 +124,10 @@ class TestInvalidTargetSubscriberError:
         assert issubclass(InvalidTargetSubscriberError, GPMQError)
 
     def test_attributes(self):
-        failures = [("ghost-sub", "not registered"), ("wrong-sub", "does not handle message type")]
+        failures = [
+            ("ghost-sub", "not registered"),
+            ("wrong-sub", "does not handle message type"),
+        ]
         error = InvalidTargetSubscriberError("order_created", failures)
         assert error.message_type == "order_created"
         assert error.failures == failures
@@ -132,7 +135,10 @@ class TestInvalidTargetSubscriberError:
     def test_message_format_lists_all_failures(self):
         error = InvalidTargetSubscriberError(
             "order_created",
-            [("ghost-sub", "not registered"), ("wrong-sub", "does not handle message type")],
+            [
+                ("ghost-sub", "not registered"),
+                ("wrong-sub", "does not handle message type"),
+            ],
         )
         msg = str(error)
         assert "order_created" in msg

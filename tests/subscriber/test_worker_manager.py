@@ -12,6 +12,7 @@ from gpmq.models.status import WorkerState, WorkerStatus
 
 # --- Helper functions ---
 
+
 def _make_subscriber_config(
     name: str = "test-sub",
     workers: int = 2,
@@ -26,21 +27,21 @@ def _make_subscriber_config(
         "redis_password": "123456",
         "stream_name": stream_name,
         "heartbeat_interval": 60,
-
         "name": name,
         "workers": workers,
         "handlers": [
             {
-                "message_types":  message_types or ["type_a"],
+                "message_types": message_types or ["type_a"],
                 "handler": "gpmq.subscriber.examples.on_msg_example_type_a",
             },
             {
-                "message_types":  message_types or ["type_b"],
+                "message_types": message_types or ["type_b"],
                 "handler": "gpmq.subscriber.examples.on_msg_example_type_b",
-            }
+            },
         ],
-        "log_category": "gpmq"
+        "log_category": "gpmq",
     }
+
 
 @pytest.fixture(autouse=True)
 def _patch_worker_run():
@@ -157,7 +158,11 @@ class TestWorkerManagerGetStatus:
         for status in statuses:
             assert isinstance(status, WorkerStatus)
             assert status.process_id > 0
-            assert status.status in (WorkerState.RUNNING, WorkerState.STOPPED, WorkerState.ERROR)
+            assert status.status in (
+                WorkerState.RUNNING,
+                WorkerState.STOPPED,
+                WorkerState.ERROR,
+            )
 
         manager.stop()
 

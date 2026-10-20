@@ -65,12 +65,14 @@ class TestGPMQAsyncBatchHandlerInit:
     def test_queue_size_zero_raises(self):
         client = _make_mock_client()
         import pytest
+
         with pytest.raises(ValueError, match="queue_size must be >= 1"):
             GPMQAsyncBatchHandler(client, queue_size=0)
 
     def test_queue_size_negative_raises(self):
         client = _make_mock_client()
         import pytest
+
         with pytest.raises(ValueError, match="queue_size must be >= 1"):
             GPMQAsyncBatchHandler(client, queue_size=-5)
 
@@ -359,7 +361,10 @@ class TestGPMQAsyncBatchHandlerSlidingWindow:
 
         def track_and_return(handlers_list, **kwargs):
             max_active[0] = max(max_active[0], len(handlers_list))
-            return [{"sub-a": _make_success_result("sub-a", f"msg-{i}")} for i in range(len(handlers_list))]
+            return [
+                {"sub-a": _make_success_result("sub-a", f"msg-{i}")}
+                for i in range(len(handlers_list))
+            ]
 
         client.wait_all = track_and_return
 
@@ -433,6 +438,7 @@ class TestGPMQAsyncBatchHandlerSlidingWindow:
     def test_wait_all_publish_async_failure_during_refill(self):
         """If publish_async fails during refill, batch must abort (fail-fast)."""
         import pytest
+
         client = _make_mock_client()
         rh1 = MagicMock(spec=ResultHandler)
         rh2 = MagicMock(spec=ResultHandler)
@@ -664,6 +670,7 @@ class TestGPMQAsyncBatchHandlerPublishFailure:
         """A publish_async failure in the refill path must raise an exception
         carrying the failing index + type/payload + the original cause."""
         import pytest
+
         client = _make_mock_client()
         rh1 = MagicMock(spec=ResultHandler)
         boom = RuntimeError("redis xadd failed")
@@ -686,6 +693,7 @@ class TestGPMQAsyncBatchHandlerPublishFailure:
     def test_initial_publish_failure_aborts(self):
         """A publish_async failure in the INITIAL batch must also abort (raw propagation OK)."""
         import pytest
+
         client = _make_mock_client()
         boom = ValueError("bad payload")
         client.publish_async.side_effect = boom
@@ -695,11 +703,16 @@ class TestGPMQAsyncBatchHandlerPublishFailure:
 
         with pytest.raises(Exception) as exc_info:
             handler.wait_all()
-        assert exc_info.value is boom or exc_info.value.__cause__ is boom or exc_info.value.__context__ is boom
+        assert (
+            exc_info.value is boom
+            or exc_info.value.__cause__ is boom
+            or exc_info.value.__context__ is boom
+        )
 
     def test_short_timeout_does_not_keyerror(self):
         """A short batch timeout must not raise KeyError from the final assembly."""
         from unittest.mock import patch
+
         client = _make_mock_client()
         rh1 = MagicMock(spec=ResultHandler)
         client.publish_async.return_value = rh1

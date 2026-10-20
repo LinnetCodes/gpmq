@@ -69,8 +69,10 @@ class Worker(Process):
         self._hostname = hostname
         self._config_dict = dict(config_dict)
         self._worker_ctx = dict() if context is None else context
-        self._ctx_proc_func: Callable[[dict[str, Any]], dict[str, Any]] | None= None
-        self._stop_event = stop_event if stop_event is not None else multiprocessing.Event()
+        self._ctx_proc_func: Callable[[dict[str, Any]], dict[str, Any]] | None = None
+        self._stop_event = (
+            stop_event if stop_event is not None else multiprocessing.Event()
+        )
 
         self._cfg_mgr: GPConfigManager | None = None
         self._key_prefix: str = self._config_dict.get("registry_key_prefix", "gpmq:")
@@ -87,7 +89,6 @@ class Worker(Process):
         global logger
         _sn = self._parse_worker_sn()
         logger = get_logger(self._config_dict["log_category"], _sn)
-
 
     # ------------------------------------------------------------------
     # Public helpers (used by tests)
@@ -122,7 +123,7 @@ class Worker(Process):
                 _cfg_mgr_path = context["config_manager_folder_path"]
                 _need_cfg_mgr = True
             if "project_name" in context:
-                _prj_name =context["project_name"]
+                _prj_name = context["project_name"]
                 _need_cfg_mgr = True
 
             if _need_cfg_mgr:  # load project config manager
@@ -147,6 +148,7 @@ class Worker(Process):
         # Create unconnected GPMQClient for embedded publisher
         if "publisher_cfg_path" in context:
             from gpmq.config import get_client
+
             client = get_client(context["publisher_cfg_path"])
             self._worker_ctx["publisher"] = client
             self._publisher_client = client
@@ -156,7 +158,9 @@ class Worker(Process):
             _path = context.pop("worker_context_processor")
             parts = _path.rsplit(".", 1)
             if len(parts) == 1:
-                raise ImportError(f"Invalid worker_context_processor import path: {_path}")
+                raise ImportError(
+                    f"Invalid worker_context_processor import path: {_path}"
+                )
             module_path, func_name = parts
             module = importlib.import_module(module_path)
             _func = getattr(module, func_name)
@@ -227,7 +231,9 @@ class Worker(Process):
         except (KeyboardInterrupt, SystemExit):
             logger.info("Worker {} interrupted, shutting down...", self._worker_id)
         except Exception:
-            logger.error("Worker {} crashed\n{}", self._worker_id, traceback.format_exc())
+            logger.error(
+                "Worker {} crashed\n{}", self._worker_id, traceback.format_exc()
+            )
         finally:
             self._cleanup()
 
@@ -247,10 +253,17 @@ class Worker(Process):
                 count=self._read_batch_size,
                 block_ms=5000,
             )
-            logger.debug(f"Read {len(messages)} messages from stream {self._stream_name}")
+            logger.debug(
+                f"Read {len(messages)} messages from stream {self._stream_name}"
+            )
         except Exception:
-            logger.error("XREADGROUP failed for worker {}, subscriber: {}, consumer: {}, stream: {} ",
-                         self._worker_id, self._subscriber_name, self.consumer_name, self._stream_name)
+            logger.error(
+                "XREADGROUP failed for worker {}, subscriber: {}, consumer: {}, stream: {} ",
+                self._worker_id,
+                self._subscriber_name,
+                self.consumer_name,
+                self._stream_name,
+            )
             logger.error("trace back: \n{}", traceback.format_exc())
             return
 
@@ -258,7 +271,9 @@ class Worker(Process):
         try:
             _now = time.time()
             if _now >= self._last_heartbeat + 5:
-                self._redis.update_worker_heartbeat(self._subscriber_name, self._worker_id)
+                self._redis.update_worker_heartbeat(
+                    self._subscriber_name, self._worker_id
+                )
                 self._last_heartbeat = _now
         except Exception:
             logger.error(
@@ -281,7 +296,9 @@ class Worker(Process):
 
                 self._process_message(msg_id, fields, handler)
 
-    def _handle_poison_message(self, msg_id: str, fields: dict[str, str], exc: BaseException) -> None:
+    def _handle_poison_message(
+        self, msg_id: str, fields: dict[str, str], exc: BaseException
+    ) -> None:
         """Handle an unparsable stream message without crashing the worker.
 
         Called when :meth:`_process_message` fails to parse ``fields`` into a
@@ -304,7 +321,10 @@ class Worker(Process):
                 broken_str = str(fields)
             logger.error(
                 "Worker {} received a malformed message id={}, treating as poison: {}\n{}",
-                self._worker_id, msg_id, broken_str[:500], traceback.format_exc(),
+                self._worker_id,
+                msg_id,
+                broken_str[:500],
+                traceback.format_exc(),
             )
 
             process_result = ProcessResult(
@@ -330,7 +350,9 @@ class Worker(Process):
                 except Exception:
                     logger.error(
                         "Worker {} failed to audit poison message {}\n{}",
-                        self._worker_id, msg_id, traceback.format_exc(),
+                        self._worker_id,
+                        msg_id,
+                        traceback.format_exc(),
                     )
 
             try:
@@ -338,7 +360,9 @@ class Worker(Process):
             except Exception:
                 logger.error(
                     "Worker {} failed to ACK poison message {} (leaving it in PEL)\n{}",
-                    self._worker_id, msg_id, traceback.format_exc(),
+                    self._worker_id,
+                    msg_id,
+                    traceback.format_exc(),
                 )
                 return
 
@@ -347,7 +371,9 @@ class Worker(Process):
             # Last-resort guard: poison handling must never crash the worker.
             logger.error(
                 "Worker {} unexpected failure during poison handling for {}\n{}",
-                self._worker_id, msg_id, traceback.format_exc(),
+                self._worker_id,
+                msg_id,
+                traceback.format_exc(),
             )
 
     def _process_message(
@@ -393,20 +419,26 @@ class Worker(Process):
             self._handle_poison_message(msg_id, fields, exc)
             return
 
-        logger.debug(f"subscriber '{self._subscriber_name}' received message from '{message.publisher}', "
-                     f"id: '{message.id}', type: '{message.type}', payload: '{message.payload}', "
-                     f"correlation_id: '{message.correlation_id}'")
+        logger.debug(
+            f"subscriber '{self._subscriber_name}' received message from '{message.publisher}', "
+            f"id: '{message.id}', type: '{message.type}', payload: '{message.payload}', "
+            f"correlation_id: '{message.correlation_id}'"
+        )
 
         # --- 2. Filter by message type ---
         if message.type not in self._message_types:
             self._redis.xack(self._stream_name, self._subscriber_name, msg_id)
-            logger.debug(f"subscriber '{self._subscriber_name}' skipped message from '{message.publisher}', "
-                         f"id: '{message.id}'")
+            logger.debug(
+                f"subscriber '{self._subscriber_name}' skipped message from '{message.publisher}', "
+                f"id: '{message.id}'"
+            )
             return
 
         # --- 2b. Filter by target subscribers (targeted publishing) ---
-        if (message.target_subscribers is not None
-                and self._subscriber_name not in message.target_subscribers):
+        if (
+            message.target_subscribers is not None
+            and self._subscriber_name not in message.target_subscribers
+        ):
             self._redis.xack(self._stream_name, self._subscriber_name, msg_id)
             logger.debug(
                 f"subscriber '{self._subscriber_name}' discarded message id '{message.id}': "
@@ -414,8 +446,10 @@ class Worker(Process):
             )
             return
 
-        logger.debug(f"subscriber '{self._subscriber_name}' will process message from '{message.publisher}', "
-                     f"id: '{message.id}'")
+        logger.debug(
+            f"subscriber '{self._subscriber_name}' will process message from '{message.publisher}', "
+            f"id: '{message.id}'"
+        )
         if self._audit:
             self._audit.save_message(message)
 
@@ -428,7 +462,9 @@ class Worker(Process):
             elif len(sig.parameters) == 2:
                 result = handler(message, self._worker_ctx)  # need worker context
             else:
-                raise TypeError(f"message handler only accept 1 or 2 parameters, got {len(sig.parameters)}")
+                raise TypeError(
+                    f"message handler only accept 1 or 2 parameters, got {len(sig.parameters)}"
+                )
         except Exception as exc:
             elapsed = time.monotonic() - start
             tb_str = traceback.format_exc()
@@ -444,14 +480,18 @@ class Worker(Process):
                 self._audit.save_result(msg_id, process_result)
             self._redis.xack(self._stream_name, self._subscriber_name, msg_id)
             self._publish_result(msg_id, process_result)
-            logger.error(f"worker '{self._worker_id}' raised an exception when handling message: {msg_id}, "
-                         f"type: '{message.type}', from '{message.publisher}', payload: '{message.payload}'")
+            logger.error(
+                f"worker '{self._worker_id}' raised an exception when handling message: {msg_id}, "
+                f"type: '{message.type}', from '{message.publisher}', payload: '{message.payload}'"
+            )
             return
 
         elapsed = time.monotonic() - start
 
         # --- 4. Build ProcessResult ---
-        if result is ProcessStatus.FAILURE:  # A failure defined in spec, but not an exception
+        if (
+            result is ProcessStatus.FAILURE
+        ):  # A failure defined in spec, but not an exception
             # message handler return ProcessStatus.FAILURE to explicitly declare a failure status defined in spec
             process_result = ProcessResult(
                 message_id=msg_id,
@@ -528,23 +568,39 @@ class Worker(Process):
             try:
                 self._redis.unregister_worker(self._subscriber_name, self._worker_id)
             except Exception:
-                logger.error("Error unregistering worker {}\n{}", self._worker_id, traceback.format_exc())
+                logger.error(
+                    "Error unregistering worker {}\n{}",
+                    self._worker_id,
+                    traceback.format_exc(),
+                )
 
         # Close embedded publisher if created
         if self._publisher_client is not None:
             try:
                 self._publisher_client.close()
             except Exception:
-                logger.error("Error closing publisher client in worker {}\n{}", self._worker_id, traceback.format_exc())
+                logger.error(
+                    "Error closing publisher client in worker {}\n{}",
+                    self._worker_id,
+                    traceback.format_exc(),
+                )
 
         try:
             if self._audit is not None:
                 self._audit.close()
         except Exception:
-            logger.error("Error closing audit store in worker {}\n{}", self._worker_id, traceback.format_exc())
+            logger.error(
+                "Error closing audit store in worker {}\n{}",
+                self._worker_id,
+                traceback.format_exc(),
+            )
 
         try:
             if self._redis is not None:
                 self._redis.disconnect()
         except Exception:
-            logger.error("Error disconnecting Redis in worker {}\n{}", self._worker_id, traceback.format_exc())
+            logger.error(
+                "Error disconnecting Redis in worker {}\n{}",
+                self._worker_id,
+                traceback.format_exc(),
+            )

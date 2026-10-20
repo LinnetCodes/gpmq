@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 def redis_config() -> GPMQConfig:
     """Create test Redis config."""
     from gpmq.config import GPMQConfig
+
     return GPMQConfig(
         redis_host="127.0.0.1",
         redis_port=6379,
@@ -29,6 +30,7 @@ def redis_config() -> GPMQConfig:
 def redis_adapter(redis_config) -> RedisAdapter:
     """Create RedisAdapter with auto-cleanup."""
     from gpmq.storage.redis_adapter import RedisAdapter
+
     adapter = RedisAdapter(redis_config)
     adapter.connect()
     yield adapter
@@ -56,6 +58,7 @@ def temp_db_path(tmp_path) -> str:
 def audit_store(temp_db_path) -> AuditStore:
     """Create AuditStore with auto-cleanup."""
     from gpmq.storage.audit_store import AuditStore
+
     store = AuditStore(temp_db_path)
     store.connect()
     yield store
@@ -66,6 +69,7 @@ def audit_store(temp_db_path) -> AuditStore:
 def publisher_config() -> PublisherConfig:
     """Create test publisher config."""
     from gpmq.config import PublisherConfig
+
     return PublisherConfig(
         publisher_name="test_publisher",
         redis_host="127.0.0.1",

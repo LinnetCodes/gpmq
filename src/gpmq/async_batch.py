@@ -116,7 +116,9 @@ class GPMQAsyncBatchHandler:
                     result_map[orig_idx] = result
                     # Refill: send next pending message
                     if next_idx < total:
-                        msg_type, payload, corr_id, target = self._pending_messages[next_idx]
+                        msg_type, payload, corr_id, target = self._pending_messages[
+                            next_idx
+                        ]
                         try:
                             new_handler = self._client.publish_async(
                                 msg_type, payload, corr_id, target

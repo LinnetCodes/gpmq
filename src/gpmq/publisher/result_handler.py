@@ -26,7 +26,7 @@ class ResultHandler:
         subscriber_names: list[str],
         redis_adapter: RedisAdapter,
         key_prefix: str,
-        audit_store: Optional[AuditStore] = None
+        audit_store: Optional[AuditStore] = None,
     ) -> None:
         """Initialize result handler and subscribe to result channels.
 
@@ -56,8 +56,11 @@ class ResultHandler:
         """Get the message ID this handler is tracking."""
         return self._message_id
 
-    def wait(self, timeout: Optional[float] = None,
-             allow_timeout_retry: Optional[bool] = None) -> dict[str, ProcessResult]:
+    def wait(
+        self,
+        timeout: Optional[float] = None,
+        allow_timeout_retry: Optional[bool] = None,
+    ) -> dict[str, ProcessResult]:
         """Block until all results collected or timeout.
 
         Args:

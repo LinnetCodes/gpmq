@@ -207,7 +207,9 @@ class TestSubscriberStart:
 
         config = _make_subscriber_config(
             name="rollback-sub",
-            handlers=[{"message_types": ["type_a"], "handler": "myapp.handlers.handle_a"}],
+            handlers=[
+                {"message_types": ["type_a"], "handler": "myapp.handlers.handle_a"}
+            ],
         )
 
         with (
@@ -359,7 +361,9 @@ class TestSubscriberRunForever:
             mock_redis = MagicMock()
             mock_redis_cls.return_value = mock_redis
 
-            with patch("gpmq.subscriber.subscriber.time.sleep", side_effect=KeyboardInterrupt()):
+            with patch(
+                "gpmq.subscriber.subscriber.time.sleep", side_effect=KeyboardInterrupt()
+            ):
                 sub = Subscriber(config)
                 sub.run_forever()
 
@@ -392,7 +396,9 @@ class TestSubscriberRunForever:
             patch("gpmq.storage.redis_adapter.RedisAdapter"),
             patch("gpmq.subscriber.handler.HandlerRegistry.load_handler") as mock_load,
             patch("gpmq.subscriber.worker_manager.WorkerManager"),
-            patch("gpmq.subscriber.subscriber.time.sleep", side_effect=KeyboardInterrupt()),
+            patch(
+                "gpmq.subscriber.subscriber.time.sleep", side_effect=KeyboardInterrupt()
+            ),
         ):
             mock_load.return_value = handle_a
             sub = Subscriber(config)
@@ -435,7 +441,9 @@ class TestSubscriberRunForever:
             mock_redis = MagicMock()
             mock_redis_cls.return_value = mock_redis
 
-            with patch("gpmq.subscriber.subscriber.importlib.import_module") as mock_import:
+            with patch(
+                "gpmq.subscriber.subscriber.importlib.import_module"
+            ) as mock_import:
                 mock_module = MagicMock()
                 mock_module.custom_forever = mock_forever_func
                 mock_import.return_value = mock_module
@@ -522,7 +530,9 @@ class TestSubscriberRunForever:
             mock_redis = MagicMock()
             mock_redis_cls.return_value = mock_redis
 
-            with patch("gpmq.subscriber.subscriber.time.sleep", side_effect=SystemExit()):
+            with patch(
+                "gpmq.subscriber.subscriber.time.sleep", side_effect=SystemExit()
+            ):
                 sub = Subscriber(config)
                 sub.run_forever()
 
@@ -542,6 +552,7 @@ class TestValidateHandlerTypes:
         and validates only the loaded_handlers passed to it directly.
         """
         from gpmq.subscriber.subscriber import Subscriber
+
         config = SubscriberConfig(
             name="t",
             handlers=[HandlerConfig(message_types=["_dummy_"], handler="mod.dummy")],
@@ -568,7 +579,9 @@ class TestValidateHandlerTypes:
             return None
 
         # handler_a's config over-claims type_b (which only handler_b declares).
-        cfg_a = HandlerConfig(message_types=["type_a", "type_b"], handler="mod.handler_a")
+        cfg_a = HandlerConfig(
+            message_types=["type_a", "type_b"], handler="mod.handler_a"
+        )
         cfg_b = HandlerConfig(message_types=["type_b"], handler="mod.handler_b")
 
         sub = self._make_subscriber()
@@ -587,8 +600,9 @@ class TestValidateHandlerTypes:
         def handler_a(msg):
             return None
 
-        cfg_a = HandlerConfig(message_types=["type_a"], handler="mod.handler_a")  # uses only one
+        cfg_a = HandlerConfig(
+            message_types=["type_a"], handler="mod.handler_a"
+        )  # uses only one
 
         sub = self._make_subscriber()
         sub._validate_handler_types([(cfg_a, handler_a)])  # must NOT raise
-

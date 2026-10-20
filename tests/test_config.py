@@ -492,7 +492,10 @@ class TestGetSubscriber:
         self._setup_mock_mgr(common, specific)
 
         sub = get_subscriber("gpmq.subscribers.notifier")
-        assert sub._worker_ctx.get("worker_context_processor") == "myapp.processors.init_context"
+        assert (
+            sub._worker_ctx.get("worker_context_processor")
+            == "myapp.processors.init_context"
+        )
 
     def test_no_worker_context_processor_no_key_in_context(self):
         """When worker_context_processor is not set, no key in worker context."""
@@ -624,7 +627,9 @@ class TestGetClient:
         specific = PublisherConfig(publisher_name="my_publisher")
         self._setup_mock_mgr(common, specific)
 
-        client = get_client(cfg_path="gpmq.publisher.main", publisher_name="my_publisher")
+        client = get_client(
+            cfg_path="gpmq.publisher.main", publisher_name="my_publisher"
+        )
         assert client.publisher_name == "my_publisher"
 
     def test_client_with_conflicting_publisher_name_raises(self):

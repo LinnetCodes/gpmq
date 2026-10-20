@@ -23,7 +23,9 @@ class TestPubSubResultCollection:
         sub_name = "test-sub"
 
         # Create handler (subscribes to channel)
-        handler = ResultHandler(message_id, [sub_name], redis_adapter, key_prefix="gpmq:")
+        handler = ResultHandler(
+            message_id, [sub_name], redis_adapter, key_prefix="gpmq:"
+        )
 
         # Simulate subscriber publishing a result
         result = ProcessResult(
@@ -44,7 +46,9 @@ class TestPubSubResultCollection:
         assert results[sub_name].status == ProcessStatus.SUCCESS
         assert results[sub_name].processing_time == 0.05
 
-    def test_publisher_flow_with_subscriber_simulation(self, redis_adapter, audit_store):
+    def test_publisher_flow_with_subscriber_simulation(
+        self, redis_adapter, audit_store
+    ):
         """Full publish flow: xadd -> subscribe -> collect result."""
         config = PublisherConfig(
             publisher_name="integ_pub",
@@ -58,10 +62,13 @@ class TestPubSubResultCollection:
         pub = Publisher(redis_adapter, audit_store, config)
 
         # Simulate a registered subscriber
-        redis_adapter.register_subscriber("integ-sub", {
-            "message_types": ["integ_test"],
-            "name": "integ-sub",
-        })
+        redis_adapter.register_subscriber(
+            "integ-sub",
+            {
+                "message_types": ["integ_test"],
+                "name": "integ-sub",
+            },
+        )
 
         # Publish message
         msg = Message(
@@ -116,10 +123,13 @@ class TestTargetedPublishingIntegration:
 
         # Register two subscribers that both handle "target_test"
         for name in ("integ-target-a", "integ-target-b"):
-            redis_adapter.register_subscriber(name, {
-                "message_types": ["target_test"],
-                "name": name,
-            })
+            redis_adapter.register_subscriber(
+                name,
+                {
+                    "message_types": ["target_test"],
+                    "name": name,
+                },
+            )
 
         try:
             msg = Message(
@@ -179,10 +189,13 @@ class TestTargetedPublishingIntegration:
         pub = Publisher(redis_adapter, audit_store, config)
 
         # Register a subscriber that does NOT handle "target_test"
-        redis_adapter.register_subscriber("integ-wrong", {
-            "message_types": ["other_type"],
-            "name": "integ-wrong",
-        })
+        redis_adapter.register_subscriber(
+            "integ-wrong",
+            {
+                "message_types": ["other_type"],
+                "name": "integ-wrong",
+            },
+        )
 
         try:
             msg = Message(

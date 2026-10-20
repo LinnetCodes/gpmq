@@ -337,7 +337,9 @@ class RedisAdapter:
                 for k, v in info.items()
             }
             # Mapping key invariance vs redis-py's encodable unions; runtime is fine.
-            client.hset(f"{key_prefix}subscriber:{name}", mapping=cast(Any, serialized_info))
+            client.hset(
+                f"{key_prefix}subscriber:{name}", mapping=cast(Any, serialized_info)
+            )
             client.set(
                 f"{key_prefix}subscriber:{name}:heartbeat",
                 json.dumps({"timestamp": time.time()}),
@@ -362,7 +364,9 @@ class RedisAdapter:
             client = self._require_client()
             key_prefix = self._config.registry_key_prefix
             # decode_responses=True guarantees str keys/values at runtime.
-            result = cast("dict[str, str]", client.hgetall(f"{key_prefix}subscriber:{name}"))
+            result = cast(
+                "dict[str, str]", client.hgetall(f"{key_prefix}subscriber:{name}")
+            )
             if not result:
                 return None
             # Deserialize JSON values back to original types
@@ -638,9 +642,7 @@ class RedisAdapter:
 
         self._retry_on_transient_errors(_register)
 
-    def update_worker_heartbeat(
-        self, subscriber_name: str, worker_id: str
-    ) -> None:
+    def update_worker_heartbeat(self, subscriber_name: str, worker_id: str) -> None:
         """Update a worker's heartbeat timestamp.
 
         Args:
@@ -663,9 +665,7 @@ class RedisAdapter:
 
         self._retry_on_transient_errors(_update)
 
-    def unregister_worker(
-        self, subscriber_name: str, worker_id: str
-    ) -> None:
+    def unregister_worker(self, subscriber_name: str, worker_id: str) -> None:
         """Remove a worker from the consumer group's registry.
 
         Args:
@@ -684,9 +684,7 @@ class RedisAdapter:
 
         self._retry_on_transient_errors(_unregister)
 
-    def get_consumer_group_workers(
-        self, subscriber_name: str
-    ) -> list[dict[str, Any]]:
+    def get_consumer_group_workers(self, subscriber_name: str) -> list[dict[str, Any]]:
         """Get all worker info for a consumer group.
 
         Args:

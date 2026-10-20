@@ -28,8 +28,12 @@ class WorkerManager:
     ``multiprocessing.Event`` to signal graceful shutdown.
     """
 
-    def __init__(self, config_dict: dict[str, Any], worker_context: dict[str, Any],
-                 redis_conn: Any = None) -> None:
+    def __init__(
+        self,
+        config_dict: dict[str, Any],
+        worker_context: dict[str, Any],
+        redis_conn: Any = None,
+    ) -> None:
         self._config = config_dict
         self._stop_event = multiprocessing.Event()
         self._workers: list[Worker] = []
@@ -114,7 +118,9 @@ class WorkerManager:
         heartbeat_map: dict[str, float] = {}
         if self._redis is not None:
             try:
-                raw_workers = self._redis.get_consumer_group_workers(self._subscriber_name)
+                raw_workers = self._redis.get_consumer_group_workers(
+                    self._subscriber_name
+                )
                 for raw in raw_workers:
                     wid = raw.get("worker_id")
                     if wid:
@@ -125,7 +131,8 @@ class WorkerManager:
             except Exception:
                 logger.error(
                     "Failed to read worker heartbeats for {}\n{}",
-                    self._subscriber_name, traceback.format_exc(),
+                    self._subscriber_name,
+                    traceback.format_exc(),
                 )
         stale_threshold = self._heartbeat_interval * 3
         now_ts = time.time()

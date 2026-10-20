@@ -120,9 +120,7 @@ class GPMQClient:
         normalized: list[str] = []
         for name in target_subscribers:
             if not isinstance(name, str) or not name:
-                raise ValueError(
-                    "target_subscribers must contain non-empty strings"
-                )
+                raise ValueError("target_subscribers must contain non-empty strings")
             if name not in seen:
                 seen.add(name)
                 normalized.append(name)
@@ -267,7 +265,9 @@ class GPMQClient:
         """
         return self._audit
 
-    def get_consumer_group_workers(self, subscriber_name: str) -> "ConsumerGroupWorkers":
+    def get_consumer_group_workers(
+        self, subscriber_name: str
+    ) -> "ConsumerGroupWorkers":
         """Query all workers registered under a consumer group.
 
         Includes idle workers. Workers whose heartbeat exceeds
@@ -292,14 +292,16 @@ class GPMQClient:
             if now - last_hb > timeout:
                 status = "stale"
 
-            workers.append(WorkerInfo(
-                worker_id=raw.get("worker_id") or "unknown",
-                hostname=raw.get("hostname") or "unknown",
-                pid=int(raw.get("pid", 0)),
-                status=status,
-                started_at=float(raw.get("started_at", 0)),
-                last_heartbeat=last_hb,
-            ))
+            workers.append(
+                WorkerInfo(
+                    worker_id=raw.get("worker_id") or "unknown",
+                    hostname=raw.get("hostname") or "unknown",
+                    pid=int(raw.get("pid", 0)),
+                    status=status,
+                    started_at=float(raw.get("started_at", 0)),
+                    last_heartbeat=last_hb,
+                )
+            )
 
         return ConsumerGroupWorkers(
             subscriber_name=subscriber_name,

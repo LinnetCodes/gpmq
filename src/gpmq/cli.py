@@ -44,7 +44,9 @@ def _init_cfg_mgr(config_path: str | None) -> GPConfigManager:
     return cfg_mgr
 
 
-def _lazy_init_cfg_mgr(ctx: click.Context, param: click.Parameter, value: str | None) -> None:
+def _lazy_init_cfg_mgr(
+    ctx: click.Context, param: click.Parameter, value: str | None
+) -> None:
     """Callback for --config option on subcommands: init GPConfigManager if not done."""
     if get_config_manager() is not None:
         return
@@ -143,7 +145,9 @@ def _resolve_audit_config(cfg_path: str) -> tuple[str, bool]:
     specific_set = specific.model_dump(exclude_unset=True)
     merged = {**common_dict, **specific_set}
 
-    return merged.get("audit_db_path", "gpmq_audit.db"), merged.get("enable_audit", True)
+    return merged.get("audit_db_path", "gpmq_audit.db"), merged.get(
+        "enable_audit", True
+    )
 
 
 @contextmanager
@@ -220,6 +224,7 @@ def _create_redis_adapter() -> Iterator["RedisAdapter"]:
 def cli(ctx: click.Context, config: str | None) -> None:
     """GPMQ - General Purpose Message Queue CLI."""
     from gpmq import use_spawn
+
     use_spawn()
     ctx.ensure_object(dict)
     if config is not None:
@@ -442,6 +447,7 @@ def worker(ctx: click.Context, subscriber_name: str) -> None:
 def gpmq_worker(subscriber_name: str, config: str | None) -> None:
     """Start a GPMQ subscriber worker process."""
     from gpmq import use_spawn
+
     use_spawn()
     _init_cfg_mgr(config)
     _run_worker(subscriber_name)

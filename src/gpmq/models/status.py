@@ -27,7 +27,8 @@ class WorkerStatus(BaseModel):
         description="Currently processing message ID (reserved; populated by R-001 live tracking)",
     )
     messages_processed: int = Field(
-        default=0, ge=0,
+        default=0,
+        ge=0,
         description="Number of messages processed (reserved; populated by R-001 live tracking)",
     )
     last_activity: datetime = Field(..., description="Last activity timestamp")

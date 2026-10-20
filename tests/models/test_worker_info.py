@@ -132,4 +132,3 @@ class TestConsumerGroupWorkers:
         dumped = group.model_dump()
         assert "worker_count" in dumped
         assert dumped["worker_count"] == 1
-

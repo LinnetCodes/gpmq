@@ -149,8 +149,12 @@ def run_forever_method(func: F) -> F:
     # 4. If annotation present, must be dict[str, Any] or Optional[dict[str, Any]]
     if second_param.annotation is not inspect.Parameter.empty:
         ann = second_param.annotation
-        if (ann != dict[str, Any] and str(ann) != "dict[str, Any]" and
-                ann != Optional[dict[str, Any]] and str(ann) != "Optional[dict[str, Any]]"):
+        if (
+            ann != dict[str, Any]
+            and str(ann) != "dict[str, Any]"
+            and ann != Optional[dict[str, Any]]
+            and str(ann) != "Optional[dict[str, Any]]"
+        ):
             raise TypeError(
                 f"run_forever_method '{func.__name__}' parameter "
                 f"'paras' annotation must be Optional[dict[str, Any]] or dict[str, Any], "

@@ -78,7 +78,7 @@ class TestWorkerMessageProcessing:
                 "redis_db": 15,
                 "heartbeat_interval": 300,
                 "audit_db_path": db_path,
-                "log_category": "gpmq"
+                "log_category": "gpmq",
             }
 
             worker = Worker(
@@ -177,7 +177,7 @@ class TestWorkerMessageProcessing:
                 "redis_db": 15,
                 "heartbeat_interval": 300,
                 "audit_db_path": str(tmp_path / "ack_test.db"),
-                "log_category": "gpmq"
+                "log_category": "gpmq",
             }
 
             worker = Worker(
@@ -249,7 +249,7 @@ class TestWorkerMessageProcessing:
                 "redis_db": 15,
                 "heartbeat_interval": 300,
                 "audit_db_path": db_path,
-                "log_category": "gpmq"
+                "log_category": "gpmq",
             }
 
             test_audit = AuditStore(db_path)
