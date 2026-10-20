@@ -1,7 +1,7 @@
 """ProcessResult and ProcessStatus models for GPMQ."""
 
 from enum import Enum
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
@@ -23,7 +23,7 @@ class ProcessResult(BaseModel):
     subscriber_name: str = Field(..., min_length=1, description="Subscriber name")
     processing_time: float = Field(..., ge=0, description="Processing time in seconds")
 
-    data: Optional[dict] = Field(default=None, description="Return data (optional)")
+    data: Optional[dict[str, Any]] = Field(default=None, description="Return data (optional)")
     error_message: Optional[str] = Field(default=None, description="Error message")
     error_traceback: Optional[str] = Field(
         default=None, description="Traceback for EXCEPTION status"

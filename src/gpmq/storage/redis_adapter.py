@@ -2,7 +2,7 @@
 
 import json
 import time
-from typing import Any, Callable, TypeVar
+from typing import Any, Callable, TypeVar, cast
 
 import redis
 
@@ -23,6 +23,25 @@ class RedisAdapter:
         """Initialize adapter with connection pool from config."""
         self._config = config
         self._client: redis.Redis | None = None
+
+    def _require_client(self) -> redis.Redis:
+        """Return the connected client.
+
+        Returns:
+            The live ``redis.Redis`` client.
+
+        Raises:
+            RedisConnectionError: If :meth:`connect` has not been called
+                (or :meth:`disconnect` was called after it).
+        """
+        if self._client is None:
+            raise RedisConnectionError(
+                host=self._config.redis_host,
+                port=self._config.redis_port,
+                attempts=0,
+                message="client not connected; call connect() first",
+            )
+        return self._client
 
     def _retry_on_transient_errors(
         self,
@@ -133,7 +152,10 @@ class RedisAdapter:
         """
 
         def _xadd() -> str:
-            return self._client.xadd(stream, fields)  # type: ignore[return-value]
+            client = self._require_client()
+            # redis-py's xadd mapping type uses invariant dict unions that our
+            # public dict[str, Any] can't satisfy; runtime accepts any encodable mapping.
+            return client.xadd(stream, cast(Any, fields))  # type: ignore[return-value]
 
         return self._retry_on_transient_errors(_xadd)
 
@@ -143,7 +165,7 @@ class RedisAdapter:
         start: str = "-",
         end: str = "+",
         count: int | None = None,
-    ) -> list[tuple[str, dict]]:
+    ) -> list[tuple[str, dict[str, Any]]]:
         """Read range of entries from stream.
 
         Args:
@@ -159,8 +181,9 @@ class RedisAdapter:
             RedisConnectionError: On connection failure after retries
         """
 
-        def _xrange() -> list[tuple[str, dict]]:
-            return self._client.xrange(stream, start, end, count=count)  # type: ignore[return-value]
+        def _xrange() -> list[tuple[str, dict[str, Any]]]:
+            client = self._require_client()
+            return client.xrange(stream, start, end, count=count)  # type: ignore[return-value]
 
         return self._retry_on_transient_errors(_xrange)
 
@@ -175,7 +198,8 @@ class RedisAdapter:
         """
 
         def _clear() -> None:
-            self._client.delete(stream)
+            client = self._require_client()
+            client.delete(stream)
 
         self._retry_on_transient_errors(_clear)
 
@@ -186,7 +210,7 @@ class RedisAdapter:
         streams: dict[str, str],
         count: int = 1,
         block_ms: int | None = None,
-    ) -> list[tuple[str, list[tuple[str, dict]]]]:
+    ) -> list[tuple[str, list[tuple[str, dict[str, Any]]]]]:
         """Read from consumer group.
 
         Args:
@@ -204,12 +228,19 @@ class RedisAdapter:
             RedisConnectionError: On connection failure after retries
         """
 
-        def _xreadgroup() -> list[tuple[str, list[tuple[str, dict]]]]:
-            result = self._client.xreadgroup(
-                group, consumer, streams, count=count, block=block_ms
+        def _xreadgroup() -> list[tuple[str, list[tuple[str, dict[str, Any]]]]]:
+            client = self._require_client()
+            # Cast across the redis-py boundary: its xreadgroup signature uses
+            # invariant dict/tuple unions incompatible with our precise types,
+            # while decode_responses=True guarantees the str/dict shape below.
+            result = cast(
+                "list[tuple[str, list[tuple[str, dict[str, Any]]]]]",
+                client.xreadgroup(
+                    group, consumer, cast(Any, streams), count=count, block=block_ms
+                ),
             )
             # Convert to list format
-            return [(stream, entries) for stream, entries in result]
+            return list(result)
 
         return self._retry_on_transient_errors(_xreadgroup)
 
@@ -229,7 +260,8 @@ class RedisAdapter:
         """
 
         def _xack() -> int:
-            return self._client.xack(stream, group, message_id)
+            client = self._require_client()
+            return client.xack(stream, group, message_id)
 
         return self._retry_on_transient_errors(_xack)
 
@@ -246,8 +278,9 @@ class RedisAdapter:
         """
 
         def _xgroup_create() -> None:
+            client = self._require_client()
             try:
-                self._client.xgroup_create(stream, group, id=id, mkstream=True)
+                client.xgroup_create(stream, group, id=id, mkstream=True)
             except redis.ResponseError as e:
                 # Group already exists is OK
                 if "BUSYGROUP" not in str(e):
@@ -270,8 +303,9 @@ class RedisAdapter:
         """
 
         def _xgroup_destroy() -> int:
+            client = self._require_client()
             try:
-                return self._client.xgroup_destroy(stream, group)  # type: ignore[return-value]
+                return client.xgroup_destroy(stream, group)
             except redis.ResponseError:
                 return 0
 
@@ -294,15 +328,17 @@ class RedisAdapter:
         """
 
         def _register() -> None:
+            client = self._require_client()
             key_prefix = self._config.registry_key_prefix
-            self._client.sadd(f"{key_prefix}subscribers", name)
+            client.sadd(f"{key_prefix}subscribers", name)
             # Serialize complex values to JSON
             serialized_info = {
                 k: json.dumps(v) if isinstance(v, (list, dict)) else v
                 for k, v in info.items()
             }
-            self._client.hset(f"{key_prefix}subscriber:{name}", mapping=serialized_info)
-            self._client.set(
+            # Mapping key invariance vs redis-py's encodable unions; runtime is fine.
+            client.hset(f"{key_prefix}subscriber:{name}", mapping=cast(Any, serialized_info))
+            client.set(
                 f"{key_prefix}subscriber:{name}:heartbeat",
                 json.dumps({"timestamp": time.time()}),
             )
@@ -323,12 +359,14 @@ class RedisAdapter:
         """
 
         def _get() -> dict[str, Any] | None:
+            client = self._require_client()
             key_prefix = self._config.registry_key_prefix
-            result = self._client.hgetall(f"{key_prefix}subscriber:{name}")
+            # decode_responses=True guarantees str keys/values at runtime.
+            result = cast("dict[str, str]", client.hgetall(f"{key_prefix}subscriber:{name}"))
             if not result:
                 return None
             # Deserialize JSON values back to original types
-            info = {}
+            info: dict[str, Any] = {}
             for k, v in result.items():
                 try:
                     info[k] = json.loads(v)
@@ -351,8 +389,9 @@ class RedisAdapter:
         """
 
         def _update() -> None:
+            client = self._require_client()
             key_prefix = self._config.registry_key_prefix
-            self._client.set(
+            client.set(
                 f"{key_prefix}subscriber:{name}:heartbeat",
                 json.dumps({"timestamp": time.time()}),
             )
@@ -373,16 +412,18 @@ class RedisAdapter:
         """
 
         def _get() -> list[str]:
+            client = self._require_client()
             key_prefix = self._config.registry_key_prefix
             now = time.time()
             active: list[str] = []
 
-            subscribers = self._client.smembers(f"{key_prefix}subscribers")
+            # decode_responses=True guarantees str members at runtime.
+            subscribers = cast("set[str]", client.smembers(f"{key_prefix}subscribers"))
             if not subscribers:
                 return active
 
             keys = [f"{key_prefix}subscriber:{sub}:heartbeat" for sub in subscribers]
-            pipe = self._client.pipeline()
+            pipe = client.pipeline()
             for key in keys:
                 pipe.get(key)
             raw_values = pipe.execute()
@@ -411,10 +452,11 @@ class RedisAdapter:
         """
 
         def _unregister() -> None:
+            client = self._require_client()
             key_prefix = self._config.registry_key_prefix
-            self._client.srem(f"{key_prefix}subscribers", name)
-            self._client.delete(f"{key_prefix}subscriber:{name}")
-            self._client.delete(f"{key_prefix}subscriber:{name}:heartbeat")
+            client.srem(f"{key_prefix}subscribers", name)
+            client.delete(f"{key_prefix}subscriber:{name}")
+            client.delete(f"{key_prefix}subscriber:{name}:heartbeat")
 
         self._retry_on_transient_errors(_unregister)
 
@@ -430,9 +472,10 @@ class RedisAdapter:
         """
 
         def _publish() -> None:
+            client = self._require_client()
             import json
 
-            self._client.publish(channel, json.dumps(message))
+            client.publish(channel, json.dumps(message))
 
         self._retry_on_transient_errors(_publish)
 
@@ -450,20 +493,23 @@ class RedisAdapter:
         """
 
         def _subscribe() -> "redis.client.PubSub":
-            pubsub = self._client.pubsub()
-            pubsub.subscribe(channels)
-            return pubsub  # type: ignore[return-value]
+            client = self._require_client()
+            # Redis.pubsub() is unannotated in redis-py 8.
+            pubsub: "redis.client.PubSub" = client.pubsub()  # type: ignore[no-untyped-call]
+            pubsub.subscribe(*channels)
+            return pubsub
 
         return self._retry_on_transient_errors(_subscribe)
 
     def get_message(
         self, pubsub: "redis.client.PubSub", timeout: float | None = None
-    ) -> dict | None:
+    ) -> dict[str, Any] | None:
         """Get message from PubSub subscription.
 
         Args:
             pubsub: PubSub object from subscribe()
-            timeout: Timeout in seconds (None = non-blocking)
+            timeout: Timeout in seconds (None = block until a message arrives,
+                matching redis-py's documented timeout=None semantics)
 
         Returns:
             Dict with 'channel' and 'data' keys, or None on timeout
@@ -472,10 +518,12 @@ class RedisAdapter:
             RedisConnectionError: On connection failure after retries
         """
 
-        def _get() -> dict | None:
+        def _get() -> dict[str, Any] | None:
             import json
 
-            msg = pubsub.get_message(timeout=timeout)
+            # redis-py 8 annotates timeout as float but documents None as
+            # "wait indefinitely"; None is a supported runtime value.
+            msg = pubsub.get_message(timeout=timeout)  # type: ignore[arg-type]
             if msg is None:
                 return None
             if msg["type"] == "message":
@@ -496,7 +544,8 @@ class RedisAdapter:
         """
 
         def _unsubscribe() -> None:
-            pubsub.unsubscribe()
+            # redis-py 8.0 leaves PubSub.unsubscribe unannotated.
+            pubsub.unsubscribe()  # type: ignore[no-untyped-call]
 
         self._retry_on_transient_errors(_unsubscribe)
 
@@ -519,7 +568,8 @@ class RedisAdapter:
         """
 
         def _xpending() -> dict[str, Any]:
-            result = self._client.xpending(stream, group)
+            client = self._require_client()
+            result = client.xpending(stream, group)
             # result: {'pending': count, 'min': min_id, 'max': max_id, 'consumers': [...]}
             return {
                 "count": result.get("pending", 0),
@@ -537,7 +587,7 @@ class RedisAdapter:
         consumer: str,
         min_idle_time: int,
         message_ids: list[str],
-    ) -> list[tuple[str, dict]]:
+    ) -> list[tuple[str, dict[str, Any]]]:
         """Claim idle messages for this consumer.
 
         Used to reassign messages from crashed or timed-out workers.
@@ -556,9 +606,11 @@ class RedisAdapter:
             RedisConnectionError: On connection failure after retries
         """
 
-        def _xclaim() -> list[tuple[str, dict]]:
-            result = self._client.xclaim(
-                stream, group, consumer, min_idle_time, message_ids
+        def _xclaim() -> list[tuple[str, dict[str, Any]]]:
+            client = self._require_client()
+            # list invariance vs redis-py's list[id-union]; same values at runtime.
+            result = client.xclaim(
+                stream, group, consumer, min_idle_time, cast(Any, message_ids)
             )
             return result  # type: ignore[return-value]
 
@@ -579,9 +631,10 @@ class RedisAdapter:
         """
 
         def _register() -> None:
+            client = self._require_client()
             key_prefix = self._config.registry_key_prefix
             key = f"{key_prefix}workers:{subscriber_name}"
-            self._client.hset(key, worker_id, json.dumps(info))
+            client.hset(key, worker_id, json.dumps(info))
 
         self._retry_on_transient_errors(_register)
 
@@ -599,13 +652,14 @@ class RedisAdapter:
         """
 
         def _update() -> None:
+            client = self._require_client()
             key_prefix = self._config.registry_key_prefix
             key = f"{key_prefix}workers:{subscriber_name}"
-            raw = self._client.hget(key, worker_id)
+            raw = client.hget(key, worker_id)
             if raw:
                 info = json.loads(raw)
                 info["last_heartbeat"] = str(time.time())
-                self._client.hset(key, worker_id, json.dumps(info))
+                client.hset(key, worker_id, json.dumps(info))
 
         self._retry_on_transient_errors(_update)
 
@@ -623,9 +677,10 @@ class RedisAdapter:
         """
 
         def _unregister() -> None:
+            client = self._require_client()
             key_prefix = self._config.registry_key_prefix
             key = f"{key_prefix}workers:{subscriber_name}"
-            self._client.hdel(key, worker_id)
+            client.hdel(key, worker_id)
 
         self._retry_on_transient_errors(_unregister)
 
@@ -645,12 +700,14 @@ class RedisAdapter:
         """
 
         def _get() -> list[dict[str, Any]]:
+            client = self._require_client()
             key_prefix = self._config.registry_key_prefix
             key = f"{key_prefix}workers:{subscriber_name}"
-            raw_map = self._client.hgetall(key)
+            # decode_responses=True guarantees str keys/values at runtime.
+            raw_map = cast("dict[str, str]", client.hgetall(key))
             if not raw_map:
                 return []
-            workers = []
+            workers: list[dict[str, Any]] = []
             for worker_id, raw_info in raw_map.items():
                 info = json.loads(raw_info)
                 info["worker_id"] = worker_id

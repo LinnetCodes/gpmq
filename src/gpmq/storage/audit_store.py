@@ -31,6 +31,18 @@ class AuditStore:
         self._lock = threading.Lock()
         self._conn: sqlite3.Connection | None = None
 
+    def _require_conn(self) -> sqlite3.Connection:
+        """Return the open connection, raising if not connected.
+
+        Raises:
+            sqlite3.ProgrammingError: If :meth:`connect` has not been called.
+        """
+        if self._conn is None:
+            raise sqlite3.ProgrammingError(
+                "AuditStore is not connected; call connect() first"
+            )
+        return self._conn
+
     def connect(self) -> None:
         """Open the SQLite database connection and create tables.
 
@@ -51,7 +63,8 @@ class AuditStore:
 
     def _create_tables(self) -> None:
         """Create database tables and indexes."""
-        cursor = self._conn.cursor()
+        conn = self._require_conn()
+        cursor = conn.cursor()
 
         # Messages table
         cursor.execute("""
@@ -99,7 +112,7 @@ class AuditStore:
             "CREATE INDEX IF NOT EXISTS idx_messages_correlation_id ON messages(correlation_id)"
         )
 
-        self._conn.commit()
+        conn.commit()
 
     def close(self) -> None:
         """Close database connection."""
@@ -225,7 +238,7 @@ class AuditStore:
         start_time: datetime | None = None,
         end_time: datetime | None = None,
         limit: int = 100,
-    ) -> list[dict]:
+    ) -> list[dict[str, Any]]:
         """Query messages by type.
 
         Args:
@@ -266,7 +279,7 @@ class AuditStore:
         start_time: datetime,
         end_time: datetime,
         limit: int = 100,
-    ) -> list[dict]:
+    ) -> list[dict[str, Any]]:
         """Query messages in time range.
 
         Args:
@@ -294,7 +307,7 @@ class AuditStore:
             )
             return [dict(row) for row in cursor.fetchall()]
 
-    def query_by_status(self, status: ProcessStatus, limit: int = 100) -> list[dict]:
+    def query_by_status(self, status: ProcessStatus, limit: int = 100) -> list[dict[str, Any]]:
         """Query results by status.
 
         Args:
@@ -321,7 +334,7 @@ class AuditStore:
             )
             return [dict(row) for row in cursor.fetchall()]
 
-    def query_by_correlation_id(self, correlation_id: str) -> list[dict]:
+    def query_by_correlation_id(self, correlation_id: str) -> list[dict[str, Any]]:
         """Query messages by correlation ID.
 
         Args:

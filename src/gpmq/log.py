@@ -7,7 +7,7 @@ of config manager. Otherwise, gpclog uses its default settings (stdout only).
 """
 
 from __future__ import annotations
-from typing import Optional
+from typing import Any, Optional
 from gpconfig import GPConfigFolder, GPConfigManager, ConfigNotFoundError
 import gpclog
 
@@ -16,7 +16,7 @@ _logger_cfg_folder_obj: GPConfigFolder | None = None
 _lookup_done: bool = False
 
 
-def get_logger(name: str = "gpmq", sn: Optional[int] = None):
+def get_logger(name: str = "gpmq", sn: Optional[int] = None) -> Any:
     """Get a logger instance via gpclog.
 
     If :func:`gpmq.set_config_manager()` was called, and a config manager was set,

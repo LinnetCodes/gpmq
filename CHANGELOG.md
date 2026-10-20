@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.1] - 2026-10-20
+
+### Added
+
+- **Ship the `py.typed` marker (PEP 561).** The wheel now includes
+  `gpmq/py.typed`, so downstream type checkers (e.g. `mypy --strict`) use
+  gpmq's inline annotations instead of falling back to `Any` (previously:
+  `import-untyped` on `from gpmq import ...`). This also makes the package
+  consistent with the `Typing :: Typed` trove classifier it already declared.
+  - 随包发布 `py.typed` 标记（PEP 561）。下游类型检查器（如 `mypy --strict`）
+    现在会使用 gpmq 的内联类型注解，而不再整体退化为 `Any`（此前
+    `from gpmq import ...` 会报 `import-untyped`）。同时使包与已声明的
+    `Typing :: Typed` trove 分类器保持一致。
+- **`mypy --strict` clean source tree + project mypy config.** Added
+  `[tool.mypy]` (strict, with the official `pydantic.mypy` plugin) and
+  `mypy` to the `dev` extra; all 27 source modules now pass `uv run mypy
+  src/gpmq` (previously 138 strict errors in 17 files). Most fixes are
+  annotation-only (parametrized `dict`/`Callable` generics, `TypeVar`
+  identity decorators, precise return types); the few behavior-visible
+  changes: Redis/AuditStore operations before `connect()` now raise a clear
+  `RedisConnectionError` / `sqlite3.ProgrammingError` instead of
+  `AttributeError`, and `RedisAdapter.get_message(timeout=None)` is
+  documented correctly as "block until a message arrives" (redis-py
+  semantics) instead of the previous wrong "non-blocking" claim.
+  Transitional per-module overrides keep `gpconfig`/`gpclog` imports (and
+  `GPMQConfig` subclassing) working until those packages ship their own
+  `py.typed` — remove them when they do (see
+  `dev_docs/issues/py-typed.md`).
+  - 源码达到 `mypy --strict` 零错误并新增项目级 mypy 配置
+    （`[tool.mypy]`：strict + 官方 `pydantic.mypy` 插件；`mypy` 进入 `dev`
+    依赖组）。此前 17 个文件共 138 个 strict 错误，现已全部修复。绝大多数
+    修复仅涉及注解（`dict`/`Callable` 泛型参数化、`TypeVar` 恒等装饰器、
+    精确返回类型）；少数可见的行为变化：未 `connect()` 就调用
+    Redis/AuditStore 操作时改为抛出语义明确的 `RedisConnectionError` /
+    `sqlite3.ProgrammingError`（原先为 `AttributeError`）；
+    `RedisAdapter.get_message(timeout=None)` 的文档更正为"阻塞直到消息
+    到达"（redis-py 语义），修正了原先错误的"非阻塞"描述。
+    `gpconfig`/`gpclog` 相关的过渡性 per-module override 将在这两个包
+    发布自己的 `py.typed` 后移除（见 `dev_docs/issues/py-typed.md`）。
+
+---
+
 ## [0.5.0] - 2026-07-07
 
 > 跟随依赖 **gpclog 0.3.0** 的破坏性变更（`log_path` 字段重命名为 `log_dir`）。

@@ -14,8 +14,13 @@ from gpmq.models.message import Message
 # can compare against real (non-string) annotations as well as the string form.
 _CTX_TYPE: Any = Optional[dict[str, Any]]
 
+# A message handler accepts ``(msg,)`` or ``(msg, context)`` and may return
+# anything (see Worker._process_message for the return-value semantics), so
+# the registry stores both shapes behind an ellipsis callable.
+MessageHandler = Callable[..., Any]
 
-def message_handler(message_types: list[str]) -> Callable:
+
+def message_handler(message_types: list[str]) -> Callable[[MessageHandler], MessageHandler]:
     """Decorator that marks a function as a message handler.
 
     Attaches the declared message types as a ``_gpmq_message_types``
@@ -34,7 +39,7 @@ def message_handler(message_types: list[str]) -> Callable:
     if not message_types:
         raise ValueError("message_types must not be empty")
 
-    def decorator(func: Callable) -> Callable:
+    def decorator(func: MessageHandler) -> MessageHandler:
         sig = inspect.signature(func)
         params = list(sig.parameters.values())
 
@@ -106,10 +111,10 @@ class HandlerRegistry:
         rebuild their own registry by re-importing handler modules.
     """
 
-    _handlers: dict[str, Callable] = {}
+    _handlers: dict[str, MessageHandler] = {}
 
     @classmethod
-    def register(cls, func: Callable) -> None:
+    def register(cls, func: MessageHandler) -> None:
         """Register a decorated handler function.
 
         Args:
@@ -119,7 +124,7 @@ class HandlerRegistry:
             AttributeError: If *func* has no ``_gpmq_message_types`` attribute.
             DuplicateMessageTypeError: If a type is already registered.
         """
-        types_list: list[str] = getattr(func, "_gpmq_message_types", None)
+        types_list: list[str] | None = getattr(func, "_gpmq_message_types", None)
         if not types_list:
             raise AttributeError(
                 f"Function {func.__name__} is not decorated with @message_handler"
@@ -134,7 +139,7 @@ class HandlerRegistry:
             cls._handlers[msg_type] = func
 
     @classmethod
-    def get_handler(cls, message_type: str) -> Callable | None:
+    def get_handler(cls, message_type: str) -> MessageHandler | None:
         """Look up the handler for a message type.
 
         Args:
@@ -146,7 +151,7 @@ class HandlerRegistry:
         return cls._handlers.get(message_type)
 
     @classmethod
-    def get_all_handlers(cls) -> dict[str, Callable]:
+    def get_all_handlers(cls) -> dict[str, MessageHandler]:
         """Return a copy of all registered handlers.
 
         Returns:
@@ -155,7 +160,7 @@ class HandlerRegistry:
         return dict(cls._handlers)
 
     @classmethod
-    def load_handler(cls, import_path: str) -> Callable:
+    def load_handler(cls, import_path: str) -> MessageHandler:
         """Dynamically import a handler function and register it.
 
         Args:
@@ -172,7 +177,7 @@ class HandlerRegistry:
             raise ImportError(f"Invalid handler import path: {import_path}")
         module_path, func_name = parts
         module = importlib.import_module(module_path)
-        func = getattr(module, func_name)
+        func: MessageHandler = getattr(module, func_name)
         cls.register(func)
         return func
 

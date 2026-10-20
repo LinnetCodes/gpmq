@@ -9,7 +9,6 @@ import traceback
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from gpclog import GPCLogger
 from gpmq.exceptions import HandlerTypeMismatchError
 from gpmq.log import get_logger
 
@@ -19,7 +18,9 @@ if TYPE_CHECKING:
     from gpmq.subscriber.worker_manager import WorkerManager
 
 
-logger: GPCLogger | None = None
+# gpclog does not ship py.typed yet (PEP 561), so its logger type resolves to
+# Any; annotate the module-global logger as Any until it does.
+logger: Any = None
 
 
 class Subscriber:
@@ -42,12 +43,12 @@ class Subscriber:
         self._heartbeat_thread: threading.Thread | None = None
         self._heartbeat_stop = threading.Event()
         self._running = False
-        self._worker_ctx: dict = dict()  # worker context data that will be passed to worker processes
+        self._worker_ctx: dict[str, Any] = dict()  # worker context data that will be passed to worker processes
 
         global logger
         logger = get_logger(self.config.log_category)
 
-    def apply_worker_context(self, **kwargs) -> "Subscriber":
+    def apply_worker_context(self, **kwargs: Any) -> "Subscriber":
         """
         apply_worker_context() method is called to apply worker context to subscriber before calling Subscriber.start() method.
         This can be useful to pass parameters and configuration to worker processes of the subscriber.
@@ -69,7 +70,7 @@ class Subscriber:
             self._redis.connect()
 
             # Load handler functions
-            loaded_handlers: list[tuple[Any, Callable]] = []
+            loaded_handlers: list[tuple[Any, Callable[..., Any]]] = []
             for handler_cfg in self._config.handlers:
                 func = HandlerRegistry.load_handler(handler_cfg.handler)
                 loaded_handlers.append((handler_cfg, func))
@@ -174,6 +175,9 @@ class Subscriber:
     def _run_custom_forever(self) -> None:
         """Load and invoke the configured run_forever_method function."""
         import_path = self._config.run_forever_method
+        if import_path is None:
+            # Unreachable via run_forever() (guarded there); kept as a guard.
+            raise RuntimeError("run_forever_method is not configured")
         parts = import_path.rsplit(".", 1)
         if len(parts) == 1:
             raise ImportError(f"Invalid run_forever_method import path: {import_path}")
@@ -189,9 +193,9 @@ class Subscriber:
 
         func(subscriber=self, paras=self._config.run_forever_method_paras)
 
-    def get_status(self) -> dict:
+    def get_status(self) -> dict[str, Any]:
         """Return subscriber status information."""
-        worker_statuses = []
+        worker_statuses: list[dict[str, Any]] = []
         if self._worker_manager:
             worker_statuses = [
                 ws.model_dump() for ws in self._worker_manager.get_worker_status()
@@ -206,7 +210,7 @@ class Subscriber:
         }
 
     def _validate_handler_types(
-        self, loaded_handlers: list[tuple[Any, Callable]]
+        self, loaded_handlers: list[tuple[Any, Callable[..., Any]]]
     ) -> None:
         """Validate each handler's config message_types is a subset of its
         decorator-declared types (per-handler, not set-union).

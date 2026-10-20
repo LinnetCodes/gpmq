@@ -3,7 +3,8 @@
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Optional, Union
+from types import TracebackType
+from typing import TYPE_CHECKING, Any, Optional, Union
 
 if TYPE_CHECKING:
     from gpmq.async_batch import GPMQAsyncBatchHandler
@@ -61,7 +62,12 @@ class GPMQClient:
         self.connect()
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
         self.close()
 
     def connect(self) -> None:
@@ -127,7 +133,7 @@ class GPMQClient:
     def publish(
         self,
         message_type: str,
-        payload: dict,
+        payload: dict[str, Any],
         correlation_id: Optional[str] = None,
         timeout: Optional[float] = None,
         target_subscribers: Optional[Union[str, list[str]]] = None,
@@ -159,7 +165,7 @@ class GPMQClient:
     def publish_async(
         self,
         message_type: str,
-        payload: dict,
+        payload: dict[str, Any],
         correlation_id: Optional[str] = None,
         target_subscribers: Optional[Union[str, list[str]]] = None,
     ) -> ResultHandler:
@@ -192,7 +198,7 @@ class GPMQClient:
     def send(
         self,
         message_type: str,
-        payload: dict,
+        payload: dict[str, Any],
         correlation_id: Optional[str] = None,
         target_subscribers: Optional[Union[str, list[str]]] = None,
     ) -> str:

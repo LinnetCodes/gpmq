@@ -9,7 +9,6 @@ import traceback
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
-from gpclog import GPCLogger
 from gpmq.log import get_logger
 from gpmq.models.status import WorkerState, WorkerStatus
 from gpmq.exceptions import InvalidMessageError
@@ -17,7 +16,9 @@ from gpmq.exceptions import InvalidMessageError
 if TYPE_CHECKING:
     from gpmq.subscriber.worker import Worker
 
-logger: GPCLogger | None = None
+# gpclog does not ship py.typed yet (PEP 561), so its logger type resolves to
+# Any; annotate the module-global logger as Any until it does.
+logger: Any = None
 
 
 class WorkerManager:

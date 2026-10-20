@@ -1,7 +1,8 @@
 """GPMQAsyncBatchHandler - batch async message processing."""
 
 import time
-from typing import Optional, Union
+from types import TracebackType
+from typing import Any, Optional, Union
 
 from gpmq.client import GPMQClient
 from gpmq.models.result import ProcessResult, ProcessStatus
@@ -31,7 +32,7 @@ class GPMQAsyncBatchHandler:
         self._timeout = timeout
         self._queue_size = queue_size
         self._pending_messages: list[
-            tuple[str, dict, Optional[str], Optional[Union[str, list[str]]]]
+            tuple[str, dict[str, Any], Optional[str], Optional[Union[str, list[str]]]]
         ] = []
         self._all_results: list[dict[str, ProcessResult]] = []
         self._waited = False
@@ -39,7 +40,7 @@ class GPMQAsyncBatchHandler:
     def send_message(
         self,
         message_type: str,
-        payload: dict,
+        payload: dict[str, Any],
         correlation_id: Optional[str] = None,
         target_subscribers: Optional[Union[str, list[str]]] = None,
     ) -> None:
@@ -169,5 +170,10 @@ class GPMQAsyncBatchHandler:
     def __enter__(self) -> "GPMQAsyncBatchHandler":
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
         self.wait_all()

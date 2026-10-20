@@ -6,7 +6,7 @@ integrating with gpconfig for configuration management.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, ClassVar, Optional
+from typing import TYPE_CHECKING, Any, ClassVar, Optional
 
 from pydantic import BaseModel, Field, field_validator
 from gpconfig import GPConfig, GPConfigManager
@@ -177,13 +177,13 @@ class SubscriberConfig(GPMQConfig):
     worker_context_processor: str | None = Field(
         default=None, description="Import path to a worker context processor function"
     )
-    worker_context: Optional[dict] = Field(
+    worker_context: Optional[dict[str, Any]] = Field(
         default=None, description="Custom worker context data dict"
     )
     run_forever_method: Optional[str] = Field(
         default=None, description="Import path to a run_forever_method decorated function"
     )
-    run_forever_method_paras: Optional[dict] = Field(
+    run_forever_method_paras: Optional[dict[str, Any]] = Field(
         default=None, description="Custom parameters dict passed to run_forever_method function's paras argument"
     )
 

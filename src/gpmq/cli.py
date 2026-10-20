@@ -1,9 +1,10 @@
 """GPMQ CLI - Command-line interface for GPMQ message queue management."""
 
 import json
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 import click
 from gpconfig import GPConfigManager
@@ -16,6 +17,12 @@ from gpmq.config import (
 )
 from gpmq.models.result import ProcessStatus
 from gpmq.storage.audit_store import AuditStore
+
+if TYPE_CHECKING:
+    from gpmq.storage.redis_adapter import RedisAdapter
+
+# Identity-preserving bound for click decorator pass-throughs.
+FC = TypeVar("FC", bound="Callable[..., Any] | click.Command")
 
 
 def _init_cfg_mgr(config_path: str | None) -> GPConfigManager:
@@ -44,7 +51,7 @@ def _lazy_init_cfg_mgr(ctx: click.Context, param: click.Parameter, value: str | 
     _init_cfg_mgr(value)
 
 
-def _config_option(func):
+def _config_option(func: FC) -> FC:
     """Decorator that adds --config option to a subcommand for lazy init."""
     return click.option(
         "--config",
@@ -127,6 +134,10 @@ def _resolve_audit_config(cfg_path: str) -> tuple[str, bool]:
         Tuple of (audit_db_path, enable_audit).
     """
     cfg_mgr = get_config_manager()
+    if cfg_mgr is None:
+        raise click.ClickException(
+            "config manager is not initialized; pass --config or set GPMQ_CLI_CFG_PATH"
+        )
     common_dict = cfg_mgr.get_config(GPMQConfig.default_cfg_path).model_dump()
     specific = cfg_mgr.get_config(cfg_path)
     specific_set = specific.model_dump(exclude_unset=True)
@@ -136,7 +147,7 @@ def _resolve_audit_config(cfg_path: str) -> tuple[str, bool]:
 
 
 @contextmanager
-def _get_audit_store(db_path: str):
+def _get_audit_store(db_path: str) -> Iterator[AuditStore]:
     """Context manager that creates and closes an AuditStore.
 
     Args:
@@ -174,7 +185,7 @@ def _parse_iso_datetime(value: str) -> datetime:
 
 
 @contextmanager
-def _create_redis_adapter():
+def _create_redis_adapter() -> Iterator["RedisAdapter"]:
     """Context manager that creates, connects, and disconnects a RedisAdapter.
 
     Uses the global GPConfigManager to load configuration.
@@ -185,6 +196,10 @@ def _create_redis_adapter():
     from gpmq.storage.redis_adapter import RedisAdapter
 
     cfg_mgr = get_config_manager()
+    if cfg_mgr is None:
+        raise click.ClickException(
+            "config manager is not initialized; pass --config or set GPMQ_CLI_CFG_PATH"
+        )
     config = cfg_mgr.get_config(GPMQConfig.default_cfg_path)
     adapter = RedisAdapter(config)
     adapter.connect()

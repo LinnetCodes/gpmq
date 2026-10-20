@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Callable
-from typing import Any, Optional
+from typing import Any, Optional, TypeVar
+
+# Identity-preserving decorator bound: decorated functions keep their exact type.
+F = TypeVar("F", bound=Callable[..., Any])
 
 
-def _is_subscriber_annotation(ann) -> bool:
+def _is_subscriber_annotation(ann: Any) -> bool:
     """Return True if ann is the real Subscriber class.
 
     Lazy import to avoid a circular import: decorators.py -> subscriber.py
@@ -21,7 +24,7 @@ def _is_subscriber_annotation(ann) -> bool:
         return False
 
 
-def worker_context_processor(func: Callable) -> Callable:
+def worker_context_processor(func: F) -> F:
     """Decorator that validates and marks a function as a worker context processor.
 
     The decorated function must accept exactly one parameter named ``context``
@@ -89,7 +92,7 @@ def worker_context_processor(func: Callable) -> Callable:
     return func
 
 
-def run_forever_method(func: Callable) -> Callable:
+def run_forever_method(func: F) -> F:
     """Decorator that validates and marks a function as a run_forever_method.
 
     The decorated function must accept exactly two parameters:

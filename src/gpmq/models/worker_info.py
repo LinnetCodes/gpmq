@@ -20,8 +20,9 @@ class ConsumerGroupWorkers(BaseModel):
     subscriber_name: str = Field(min_length=1, description="Subscriber / consumer group name")
     workers: list[WorkerInfo] = Field(default_factory=list, description="List of workers")
 
+    # computed_field wraps a bare method into a property; stacking it on an
+    # explicit @property trips mypy's prop-decorator limitation.
     @computed_field
-    @property
     def worker_count(self) -> int:
         """Number of workers (dynamically reflects len(workers))."""
         return len(self.workers)

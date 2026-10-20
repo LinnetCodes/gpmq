@@ -1,11 +1,14 @@
 """Result handler for collecting async message processing results."""
 
 import time
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from gpmq import AuditStore
 from gpmq.models.result import ProcessResult, ProcessStatus
 from gpmq.storage.redis_adapter import RedisAdapter
+
+if TYPE_CHECKING:
+    from redis.client import PubSub
 
 
 class ResultHandler:
@@ -39,7 +42,7 @@ class ResultHandler:
         self._redis = redis_adapter
         self._key_prefix = key_prefix
         self._audit_store = audit_store
-        self._pubsub = None
+        self._pubsub: "PubSub | None" = None
         self._start_time = time.monotonic()
 
         if self._expected:
@@ -68,6 +71,11 @@ class ResultHandler:
         if not self._expected:
             return {}
 
+        # Subscribed in __init__ whenever _expected is non-empty; _cleanup()
+        # only runs after the collection loop has finished.
+        pubsub = self._pubsub
+        assert pubsub is not None
+
         deadline = time.monotonic() + timeout if timeout else None
 
         while len(self._results) < len(self._expected):
@@ -79,7 +87,7 @@ class ResultHandler:
             else:
                 poll_timeout = 1.0
 
-            msg = self._redis.get_message(self._pubsub, timeout=poll_timeout)
+            msg = self._redis.get_message(pubsub, timeout=poll_timeout)
             if msg and "data" in msg:
                 result = ProcessResult.model_validate(msg["data"])
                 self._results[result.subscriber_name] = result
@@ -135,6 +143,10 @@ class ResultHandler:
         if not self._expected:
             return {}
 
+        # Same invariant as wait(): subscribed while _expected is non-empty.
+        pubsub = self._pubsub
+        assert pubsub is not None
+
         deadline = time.monotonic() + timeout if timeout else None
 
         while len(self._results) < 1:
@@ -146,7 +158,7 @@ class ResultHandler:
             else:
                 poll_timeout = 1.0
 
-            msg = self._redis.get_message(self._pubsub, timeout=poll_timeout)
+            msg = self._redis.get_message(pubsub, timeout=poll_timeout)
             if msg and "data" in msg:
                 result = ProcessResult.model_validate(msg["data"])
                 self._results[result.subscriber_name] = result

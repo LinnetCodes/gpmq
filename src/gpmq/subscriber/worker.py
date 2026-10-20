@@ -4,23 +4,30 @@ from __future__ import annotations
 
 import importlib
 import json
+import multiprocessing
 import time
 import traceback
 import inspect
 from datetime import datetime
 from collections.abc import Callable
-from multiprocessing import Event, Process
-from typing import Any, Optional
+from multiprocessing import Process
+from typing import Any, Optional, TYPE_CHECKING
 
 from gpconfig import GPConfigManager
-from gpclog import GPCLogger
 
 from gpmq.log import get_logger
 from gpmq.config import set_config_manager
 from gpmq.models.message import Message
 from gpmq.models.result import ProcessResult, ProcessStatus
 
-logger: GPCLogger | None = None
+if TYPE_CHECKING:
+    # The real Event type; module-level ``multiprocessing.Event`` is a factory
+    # function bound to the default context, not a class.
+    from multiprocessing.synchronize import Event as SyncEvent
+
+# gpclog does not ship py.typed yet (PEP 561), so its logger type resolves to
+# Any; annotate the module-global logger as Any until it does.
+logger: Any = None
 
 
 class Worker(Process):
@@ -52,7 +59,7 @@ class Worker(Process):
         hostname: str,
         config_dict: dict[str, Any],
         context: Optional[dict[str, Any]] = None,
-        stop_event: Optional[Event] = None,
+        stop_event: Optional["SyncEvent"] = None,
     ) -> None:
         super().__init__()
         self._subscriber_name = subscriber_name
@@ -63,7 +70,7 @@ class Worker(Process):
         self._config_dict = dict(config_dict)
         self._worker_ctx = dict() if context is None else context
         self._ctx_proc_func: Callable[[dict[str, Any]], dict[str, Any]] | None= None
-        self._stop_event = stop_event or Event()
+        self._stop_event = stop_event if stop_event is not None else multiprocessing.Event()
 
         self._cfg_mgr: GPConfigManager | None = None
         self._key_prefix: str = self._config_dict.get("registry_key_prefix", "gpmq:")
@@ -105,7 +112,7 @@ class Worker(Process):
         _suffix = self._worker_id.rsplit("-worker-", 1)[-1]
         return int(_suffix)
 
-    def prepare_worker_context(self, context: dict[str, Any]):
+    def prepare_worker_context(self, context: dict[str, Any]) -> None:
         if self._cfg_mgr is None:
             _cfg_mgr_path = None
             _prj_name = self._config_dict["name"]
@@ -369,14 +376,18 @@ class Worker(Process):
             target_raw = fields.get("target_subscribers")
             target_list = json.loads(target_raw) if target_raw else None
 
-            message = Message(
-                id=msg_id,
-                type=fields.get("type", ""),
-                timestamp=fields.get("timestamp", ""),
-                publisher=fields.get("publisher", ""),
-                payload=payload,
-                correlation_id=fields.get("correlation_id", None),
-                target_subscribers=target_list,
+            # model_validate keeps pydantic's coercion semantics (e.g. ISO
+            # timestamp strings) identical to keyword construction.
+            message = Message.model_validate(
+                {
+                    "id": msg_id,
+                    "type": fields.get("type", ""),
+                    "timestamp": fields.get("timestamp", ""),
+                    "publisher": fields.get("publisher", ""),
+                    "payload": payload,
+                    "correlation_id": fields.get("correlation_id", None),
+                    "target_subscribers": target_list,
+                }
             )
         except Exception as exc:
             self._handle_poison_message(msg_id, fields, exc)

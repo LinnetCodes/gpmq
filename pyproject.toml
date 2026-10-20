@@ -57,6 +57,7 @@ dev = [
     "pytest>=8.0",
     "pytest-cov>=4.0",
     "ruff>=0.4.0",
+    "mypy>=1.11",
     "progressbar2>=4.5.0",
 ]
 docs = [
@@ -92,3 +93,20 @@ only-include = [
     "LICENSE",
     "pyproject.toml",
 ]
+
+[tool.mypy]
+strict = true
+plugins = ["pydantic.mypy"]
+# gpconfig and gpclog do not ship `py.typed` (PEP 561) yet, so their imports
+# resolve to Any. These transitional overrides mirror the workaround downstream
+# strict-mode users apply and must be removed once those packages ship py.typed
+# (tracked in dev_docs/issues/py-typed.md).
+[[tool.mypy.overrides]]
+module = ["gpconfig", "gpconfig.*", "gpclog", "gpclog.*"]
+ignore_missing_imports = true
+
+# GPMQConfig subclasses gpconfig's GPConfig; until gpconfig ships py.typed the
+# base class resolves to Any, which strict mode forbids subclassing.
+[[tool.mypy.overrides]]
+module = "gpmq.config"
+disallow_subclassing_any = false

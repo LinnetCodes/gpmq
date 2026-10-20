@@ -78,7 +78,7 @@ def on_load_user_profile(msg: Message, context: Optional[dict[str, Any]] = None)
 
 @message_handler(["load_user_posts", "load_user_activities"])
 def on_load_user_data(msg: Message, context: Optional[dict[str, Any]] = None) -> Any:
-    data = dict()
+    data: dict[str, Any] = dict()
 
     if context is None:
         raise Exception("missing worker context")
