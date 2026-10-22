@@ -59,7 +59,7 @@ from gpmq.subscriber import worker_context_processor
 from gpmq.subscriber.handler import HandlerRegistry, message_handler
 from gpmq.subscriber.subscriber import Subscriber
 
-__version__ = "0.5.1"
+__version__ = "0.6.0"
 
 __all__ = [
     # Process policy
