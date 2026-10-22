@@ -140,7 +140,7 @@ def _resolve_audit_config(cfg_path: str) -> tuple[str, bool]:
         raise click.ClickException(
             "config manager is not initialized; pass --config or set GPMQ_CLI_CFG_PATH"
         )
-    common_dict = cfg_mgr.get_config(GPMQConfig.default_cfg_path).model_dump()
+    common_dict = cfg_mgr.get_config(GPMQConfig.dotted_default_cfg_path()).model_dump()
     specific = cfg_mgr.get_config(cfg_path)
     specific_set = specific.model_dump(exclude_unset=True)
     merged = {**common_dict, **specific_set}
@@ -204,7 +204,7 @@ def _create_redis_adapter() -> Iterator["RedisAdapter"]:
         raise click.ClickException(
             "config manager is not initialized; pass --config or set GPMQ_CLI_CFG_PATH"
         )
-    config = cfg_mgr.get_config(GPMQConfig.default_cfg_path)
+    config = cfg_mgr.get_config(GPMQConfig.dotted_default_cfg_path())
     adapter = RedisAdapter(config)
     adapter.connect()
     try:

@@ -1,12 +1,19 @@
 """Tests for GPMQ configuration classes."""
 
-import pytest
+from pathlib import Path
 
+import pytest
+from gpconfig import GPConfigManager
+
+import gpmq.config as cfg_module
 from gpmq.config import (
     GPMQConfig,
     HandlerConfig,
     PublisherConfig,
     SubscriberConfig,
+    get_client,
+    get_subscriber,
+    set_config_manager,
 )
 
 
@@ -362,7 +369,7 @@ class TestGetSubscriber:
         mock_mgr = MagicMock(spec=GPConfigManager)
         mock_mgr.get_config = MagicMock(
             side_effect=lambda path: {
-                "gpmq/common": common_config,
+                "gpmq.common": common_config,
                 "gpmq.subscribers.notifier": specific_config,
                 "logs": MagicMock(),  # needed by gpmq.log.get_logger
             }.get(path, MagicMock())
@@ -556,7 +563,7 @@ class TestGetClient:
         mock_mgr = MagicMock(spec=GPConfigManager)
 
         def get_config(path):
-            if path == "gpmq/common":
+            if path == "gpmq.common":
                 return common_config
             if specific_config and path == "gpmq.publisher.main":
                 return specific_config
@@ -674,3 +681,81 @@ class TestGetClient:
 
         with pytest.raises(ValueError, match="timeout"):
             get_client(timeout=30.0)
+
+
+class TestDottedDefaultCfgPath:
+    """Regression tests for slash-vs-dot cfg addressing under gpconfig >= 0.5.
+
+    gpconfig >= 0.5 rejects literal '/' or '\\' in get_config() paths
+    (IllegalPathError), and gpconfig >= 0.4 rejects '.' in default_cfg_path
+    at class-definition time (ValueError via GPConfig.__init_subclass__).
+    gpmq therefore keeps default_cfg_path slash-style (save contract) and
+    addresses configs via the derived dotted form.
+    See dev_docs/issues/gpmq-default-cfg-path.md.
+    """
+
+    def test_default_cfg_paths_stay_folder_style(self):
+        """Guard: dot form here would crash import under gpconfig >= 0.4."""
+        assert GPMQConfig.default_cfg_path == "gpmq/common"
+        assert PublisherConfig.default_cfg_path == "gpmq/publisher/main"
+        assert SubscriberConfig.default_cfg_path == "gpmq/subscribers"
+
+    def test_dotted_default_cfg_path_derivation(self):
+        """The derived accessor converts folder paths to dot cfg paths."""
+        assert GPMQConfig.dotted_default_cfg_path() == "gpmq.common"
+        assert PublisherConfig.dotted_default_cfg_path() == "gpmq.publisher.main"
+        assert SubscriberConfig.dotted_default_cfg_path() == "gpmq.subscribers"
+
+    @staticmethod
+    def _make_cfg_folder(tmp_path: Path) -> Path:
+        """Build a real gpconfig folder: global_env.yaml + gpmq yamls.
+
+        enable_audit is disabled so get_client() creates no SQLite file.
+        """
+        gpmq_dir = tmp_path / "gpmq"
+        (gpmq_dir / "subscribers").mkdir(parents=True)
+        (gpmq_dir / "publisher").mkdir(parents=True)
+        (tmp_path / "global_env.yaml").write_text("debug: true\n", encoding="utf-8")
+        (gpmq_dir / "common.yaml").write_text(
+            "cfg_class_name: GPMQConfig\n"
+            "redis_host: 127.0.0.1\n"
+            "enable_audit: false\n",
+            encoding="utf-8",
+        )
+        (gpmq_dir / "subscribers" / "notifier.yaml").write_text(
+            "cfg_class_name: SubscriberConfig\n"
+            "name: notifier\n"
+            "handlers:\n"
+            "  - message_types: [\"demo_type\"]\n"
+            "    handler: \"gpmq.subscriber.examples.on_msg_pingpong\"\n",
+            encoding="utf-8",
+        )
+        (gpmq_dir / "publisher" / "main.yaml").write_text(
+            "cfg_class_name: PublisherConfig\npublisher_name: test_pub\n",
+            encoding="utf-8",
+        )
+        return tmp_path
+
+    def test_get_client_with_real_config_manager(self, tmp_path):
+        """get_client() must work against a real GPConfigManager (0.5.x)."""
+        cfg_folder = self._make_cfg_folder(tmp_path)
+        set_config_manager(
+            GPConfigManager(project_name="gpmq_unit_test", cfg_folder=cfg_folder)
+        )
+        try:
+            client = get_client(cfg_path="gpmq.publisher.main")
+            assert client.publisher_name == "test_pub"
+        finally:
+            cfg_module._gpmq_cfg_mgr = None
+
+    def test_get_subscriber_with_real_config_manager(self, tmp_path):
+        """get_subscriber() must work against a real GPConfigManager (0.5.x)."""
+        cfg_folder = self._make_cfg_folder(tmp_path)
+        set_config_manager(
+            GPConfigManager(project_name="gpmq_unit_test", cfg_folder=cfg_folder)
+        )
+        try:
+            sub = get_subscriber("gpmq.subscribers.notifier")
+            assert sub.name == "notifier"
+        finally:
+            cfg_module._gpmq_cfg_mgr = None

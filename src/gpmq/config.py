@@ -52,7 +52,25 @@ class GPMQConfig(GPConfig):
     """
 
     cfg_class_name: ClassVar[str] = "GPMQConfig"
+    # gpconfig save contract: folder path (slash style); must NOT contain '.'
+    # (gpconfig >= 0.4 rejects '.' in default_cfg_path at class-definition
+    # time via GPConfig.__init_subclass__).
     default_cfg_path: ClassVar[str] = "gpmq/common"
+
+    @classmethod
+    def dotted_default_cfg_path(cls) -> str:
+        """Dot-notation cfg_path for GPConfigManager.get_config() addressing.
+
+        gpconfig >= 0.4 requires dot notation in get_config() paths (literal
+        '/' or '\\' raise IllegalPathError), while default_cfg_path itself is
+        a save-contract folder path that must stay slash-style. This derived
+        accessor converts one to the other; subclasses inherit it, deriving
+        from their own default_cfg_path.
+
+        Returns:
+            Dot-notation addressing path, e.g. ``"gpmq.common"``.
+        """
+        return cls.default_cfg_path.replace("\\", "/").strip("/").replace("/", ".")
 
     # Redis connection
     redis_host: str = Field(default="localhost", description="Redis server host")
@@ -256,7 +274,7 @@ def _require_cfg_mgr() -> GPConfigManager:
 def get_subscriber(cfg_path: str) -> "Subscriber":
     """Create a Subscriber from merged common + specific config.
 
-    Loads the base GPMQ config from ``gpmq/common`` and merges it with
+    Loads the base GPMQ config from ``gpmq.common`` and merges it with
     the subscriber-specific config at *cfg_path*.  The subscriber config
     only needs to contain its own fields (name, handlers, workers, etc.)
     and any common fields it wants to override.
@@ -277,7 +295,7 @@ def get_subscriber(cfg_path: str) -> "Subscriber":
     cfg_mgr = _require_cfg_mgr()
 
     # 1) Load base common config
-    common_dict = cfg_mgr.get_config(GPMQConfig.default_cfg_path).model_dump()
+    common_dict = cfg_mgr.get_config(GPMQConfig.dotted_default_cfg_path()).model_dump()
 
     # 2) Load specific subscriber config
     specific = cfg_mgr.get_config(cfg_path)
@@ -353,7 +371,7 @@ def get_client(
     cfg_mgr = _require_cfg_mgr()
 
     # 1) Always load common config as base
-    common_dict = cfg_mgr.get_config(GPMQConfig.default_cfg_path).model_dump()
+    common_dict = cfg_mgr.get_config(GPMQConfig.dotted_default_cfg_path()).model_dump()
 
     if cfg_path is not None:
         # Mode 1: load specific config file
