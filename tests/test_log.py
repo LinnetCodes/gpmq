@@ -42,9 +42,39 @@ def test_lookup_skipped_after_success():
     cfg_mgr = MagicMock(spec=GPConfigManager)
     cfg_mgr.get_config.return_value = MagicMock()  # success
 
+    # Use a name unique to this test: shared names can be satisfied from
+    # gpclog's logger cache, masking the lookup behavior under assertion.
     with patch("gpmq.get_config_manager", return_value=cfg_mgr):
-        log.get_logger("gpmq")
-        log.get_logger("gpmq")
+        log.get_logger("latch_success_one")
+        log.get_logger("latch_success_one")
+
+    assert cfg_mgr.get_config.call_count == 1
+
+
+def test_non_folder_logs_result_is_not_installed_into_gpclog():
+    """A get_config('logs') result that is not a GPConfigFolder must never be
+    installed into gpclog's process-global config folder.
+
+    gpmq.log used to pass whatever get_config('logs') returned straight to
+    gpclog.set_config_folder(). With a spec-mock config manager (whose
+    get_config returns a MagicMock instead of raising ConfigNotFoundError),
+    that poisoned gpclog for the whole process: every later
+    gpclog.get_logger() with an uncached name raised
+    ``ValueError: logger name must be a string`` — the root cause of
+    tests/test_config.py failing 17 tests when run in isolation.
+    """
+    from unittest.mock import MagicMock, patch
+    from gpmq import log
+    from gpconfig import GPConfigManager
+
+    cfg_mgr = MagicMock(spec=GPConfigManager)
+    cfg_mgr.get_config.return_value = MagicMock()  # not a GPConfigFolder
+
+    # Distinct uncached names: without the guard, the first call installs
+    # the mock into gpclog and both calls raise ValueError.
+    with patch("gpmq.get_config_manager", return_value=cfg_mgr):
+        log.get_logger("isolation_probe_one")
+        log.get_logger("isolation_probe_two")
 
     assert cfg_mgr.get_config.call_count == 1
 

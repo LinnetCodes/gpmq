@@ -3,7 +3,7 @@
 Provides a centralized logging interface for all GPMQ components.
 If :func:`gpmq.set_config_manager()` is called before getting a logger, gpclog
 will attempt to load logger configurations from YAML files in 'logs' folder
-of config manager. Otherwise, gpclog uses its default settings (stdout only).
+of config manager. Otherwise, gpclog uses its default settings.
 """
 
 from __future__ import annotations
@@ -21,8 +21,8 @@ def get_logger(name: str = "gpmq", sn: Optional[int] = None) -> Any:
 
     If :func:`gpmq.set_config_manager()` was called, and a config manager was set,
     gpmq will try loading gpclog configuration from 'logs' folder of the
-    config manager folder, Otherwise it falls back to default behavior
-    (stdout only).
+    config manager folder, Otherwise, it falls back to gpclog's default
+    settings.
 
     The 'logs' folder lookup is attempted at most once per process: the
     first call resolves it (and emits a warning on miss), then every
@@ -45,9 +45,18 @@ def get_logger(name: str = "gpmq", sn: Optional[int] = None) -> Any:
             # get and setup logger config folder if a config manager is available,
             # then a logger can be configured automatically by YAML config file
             try:
-                _logger_cfg_folder_obj = _cfg_mgr.get_config("logs")
-                gpclog.set_config_folder(_logger_cfg_folder_obj)
+                folder = _cfg_mgr.get_config("logs")
             except ConfigNotFoundError:
+                folder = None
+            # Only a real GPConfigFolder may be installed into gpclog's
+            # process-global state. Anything else (a raw dict when 'logs' is
+            # an unregistered yaml file, or a MagicMock from a spec-mock
+            # manager in tests) would break every later gpclog.get_logger()
+            # call with an uncached name.
+            if isinstance(folder, GPConfigFolder):
+                _logger_cfg_folder_obj = folder
+                gpclog.set_config_folder(folder)
+            else:
                 _logger = gpclog.get_logger(name, sn)
                 _logger.warning("No logger configuration folder 'logs' found")
         _lookup_done = True
