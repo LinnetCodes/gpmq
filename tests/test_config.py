@@ -699,12 +699,34 @@ class TestDottedDefaultCfgPath:
         assert GPMQConfig.default_cfg_path == "gpmq/common"
         assert PublisherConfig.default_cfg_path == "gpmq/publisher/main"
         assert SubscriberConfig.default_cfg_path == "gpmq/subscribers"
+        # Generic guard: any future GPMQConfig subclass with a dotted
+        # default_cfg_path would crash import under gpconfig >= 0.4.
+        for cfg_cls in [GPMQConfig, *GPMQConfig.__subclasses__()]:
+            assert "." not in (cfg_cls.default_cfg_path or "")
 
     def test_dotted_default_cfg_path_derivation(self):
         """The derived accessor converts folder paths to dot cfg paths."""
         assert GPMQConfig.dotted_default_cfg_path() == "gpmq.common"
         assert PublisherConfig.dotted_default_cfg_path() == "gpmq.publisher.main"
         assert SubscriberConfig.dotted_default_cfg_path() == "gpmq.subscribers"
+
+    def test_dotted_default_cfg_path_normalizes_backslashes(self):
+        """Windows-style folder paths derive the same dot cfg_path."""
+
+        class WinStyleCfg(GPMQConfig):
+            cfg_class_name = "WinStyleCfg"
+            default_cfg_path = "gpmq\\publisher\\main"
+
+        assert WinStyleCfg.dotted_default_cfg_path() == "gpmq.publisher.main"
+
+    def test_dotted_default_cfg_path_drops_empty_segments(self):
+        """Double and edge slashes must not produce empty dot segments."""
+
+        class MessyCfg(GPMQConfig):
+            cfg_class_name = "MessyCfg"
+            default_cfg_path = "/gpmq//common/"
+
+        assert MessyCfg.dotted_default_cfg_path() == "gpmq.common"
 
     @staticmethod
     def _make_cfg_folder(tmp_path: Path) -> Path:
@@ -739,6 +761,7 @@ class TestDottedDefaultCfgPath:
     def test_get_client_with_real_config_manager(self, tmp_path):
         """get_client() must work against a real GPConfigManager (0.5.x)."""
         cfg_folder = self._make_cfg_folder(tmp_path)
+        saved_mgr = cfg_module._gpmq_cfg_mgr
         set_config_manager(
             GPConfigManager(project_name="gpmq_unit_test", cfg_folder=cfg_folder)
         )
@@ -746,11 +769,12 @@ class TestDottedDefaultCfgPath:
             client = get_client(cfg_path="gpmq.publisher.main")
             assert client.publisher_name == "test_pub"
         finally:
-            cfg_module._gpmq_cfg_mgr = None
+            cfg_module._gpmq_cfg_mgr = saved_mgr
 
     def test_get_subscriber_with_real_config_manager(self, tmp_path):
         """get_subscriber() must work against a real GPConfigManager (0.5.x)."""
         cfg_folder = self._make_cfg_folder(tmp_path)
+        saved_mgr = cfg_module._gpmq_cfg_mgr
         set_config_manager(
             GPConfigManager(project_name="gpmq_unit_test", cfg_folder=cfg_folder)
         )
@@ -758,4 +782,4 @@ class TestDottedDefaultCfgPath:
             sub = get_subscriber("gpmq.subscribers.notifier")
             assert sub.name == "notifier"
         finally:
-            cfg_module._gpmq_cfg_mgr = None
+            cfg_module._gpmq_cfg_mgr = saved_mgr

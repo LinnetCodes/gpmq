@@ -68,9 +68,14 @@ class GPMQConfig(GPConfig):
         from their own default_cfg_path.
 
         Returns:
-            Dot-notation addressing path, e.g. ``"gpmq.common"``.
+            Dot-notation addressing path, e.g. ``"gpmq.common"``. Empty
+            segments (double/edge slashes) are dropped, so ``"gpmq//common/"``
+            derives ``"gpmq.common"``.
         """
-        return cls.default_cfg_path.replace("\\", "/").strip("/").replace("/", ".")
+        segments = [
+            s for s in cls.default_cfg_path.replace("\\", "/").split("/") if s
+        ]
+        return ".".join(segments)
 
     # Redis connection
     redis_host: str = Field(default="localhost", description="Redis server host")
