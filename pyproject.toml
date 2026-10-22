@@ -97,16 +97,13 @@ only-include = [
 [tool.mypy]
 strict = true
 plugins = ["pydantic.mypy"]
-# gpconfig and gpclog do not ship `py.typed` (PEP 561) yet, so their imports
-# resolve to Any. These transitional overrides mirror the workaround downstream
-# strict-mode users apply and must be removed once those packages ship py.typed
-# (tracked in dev_docs/issues/py-typed.md).
+# gpclog does not ship `py.typed` (PEP 561) yet, so its imports resolve to
+# Any. This transitional override mirrors the workaround downstream strict-
+# mode users apply and must be removed once gpclog ships py.typed (tracked
+# in dev_docs/issues/py-typed.md). gpconfig has shipped py.typed since
+# 0.5.1 (our dependency floor), so it no longer needs an override — the
+# former `disallow_subclassing_any` exemption for gpmq.config is equally
+# obsolete because GPConfig is a typed base class now.
 [[tool.mypy.overrides]]
-module = ["gpconfig", "gpconfig.*", "gpclog", "gpclog.*"]
+module = ["gpclog", "gpclog.*"]
 ignore_missing_imports = true
-
-# GPMQConfig subclasses gpconfig's GPConfig; until gpconfig ships py.typed the
-# base class resolves to Any, which strict mode forbids subclassing.
-[[tool.mypy.overrides]]
-module = "gpmq.config"
-disallow_subclassing_any = false

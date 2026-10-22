@@ -155,7 +155,9 @@ class GPMQClient:
         handler = self.publish_async(
             message_type, payload, correlation_id, target_subscribers
         )
-        effective_timeout = timeout or self._config.publish_timeout
+        effective_timeout = timeout or getattr(
+            self._config, "publish_timeout", None
+        )
         results = handler.wait(timeout=effective_timeout)
 
         return results
@@ -244,7 +246,9 @@ class GPMQClient:
         """
         if not handlers:
             return []
-        effective_timeout = timeout or self._config.publish_timeout
+        effective_timeout = timeout or getattr(
+            self._config, "publish_timeout", None
+        )
         with ThreadPoolExecutor(max_workers=min(len(handlers), 32)) as executor:
             futures = [
                 executor.submit(
