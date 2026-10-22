@@ -7,6 +7,77 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.6.0] - 2026-10-23
+
+### ⚠️ Breaking Changes
+
+- **Dependency constraint `gpconfig>=0.3.0` → `gpconfig>=0.5.1`** (`pyproject.toml`).
+  gpconfig 0.4.0 made `get_config()` addressing dot-notation-only (literal
+  `/` or `\` raise `IllegalPathError`), and 0.5.1 ships the `py.typed`
+  marker this release consumes for strict typing. Environments resolving
+  gpconfig 0.3.x / 0.4.x must upgrade alongside gpmq.
+  - 依赖约束 `gpconfig>=0.3.0` 提升为 `gpconfig>=0.5.1`。gpconfig 0.4.0 起
+    `get_config()` 寻址只接受点号路径（字面 `/`、`\` 会抛 `IllegalPathError`），
+    0.5.1 起随包发布本版本严格类型检查所依赖的 `py.typed`。解析到
+    gpconfig 0.3.x / 0.4.x 的环境需要随 gpmq 一并升级。
+
+### Fixed
+
+- **`get_subscriber()` / `get_client()` / the CLI crashed under gpconfig ≥ 0.4**
+  with `IllegalPathError` before doing any work: gpmq fed its slash-style
+  `default_cfg_path` straight into the now dot-only
+  `GPConfigManager.get_config()`. `default_cfg_path` itself must stay
+  slash-style — gpconfig ≥ 0.4 validates at class-definition time that it
+  contains no `.` (it is a save-contract folder path) — so addressing now
+  goes through a new derived accessor `GPMQConfig.dotted_default_cfg_path()`
+  (folder path → dot cfg path, e.g. `"gpmq/common"` → `"gpmq.common"`; also
+  drops empty segments and normalizes `\`), used by `get_subscriber()`,
+  `get_client()` and both CLI entry points. Regression tests now exercise
+  the real `GPConfigManager` end-to-end.
+  - 修复 gpconfig ≥ 0.4 下 `get_subscriber()` / `get_client()` / CLI 启动即
+    崩溃（`IllegalPathError`）的问题：gpmq 此前把斜杠形式的
+    `default_cfg_path` 直接传给了只认点号的 `GPConfigManager.get_config()`。
+    `default_cfg_path` 本身必须保持斜杠形式（gpconfig ≥ 0.4 在类定义期校验其
+    不含 `.`——它是保存契约的文件夹路径），因此寻址改经新增的派生访问器
+    `GPMQConfig.dotted_default_cfg_path()`（文件夹路径 → 点号 cfg 路径，如
+    `"gpmq/common"` → `"gpmq.common"`，同时过滤空段并归一化 `\`）。回归
+    测试改为驱动真实 `GPConfigManager` 端到端验证。
+- **Anonymous-client `publish()` without an explicit `timeout`** no longer
+  hits a latent `AttributeError` (`publish_timeout` only exists on
+  `PublisherConfig`); it now means "no limit", matching the documented
+  default. Surfaced — and fixed — as part of making the source
+  `mypy --strict` clean under typed gpconfig.
+  - 匿名 client 调用 `publish()` 且不传 `timeout` 时不再触发潜在的
+    `AttributeError`（`publish_timeout` 仅存在于 `PublisherConfig`）；现在
+    语义为"不限时"，与文档默认值一致。该问题在 gpconfig 提供 `py.typed`
+    后做 `mypy --strict` 清理时暴露并修复。
+- **`gpmq.log` no longer installs foreign objects into gpclog's
+  process-global config.** The result of `get_config("logs")` is now
+  type-checked: only a real `GPConfigFolder` is installed; anything else
+  (a raw dict when `logs` is an unregistered yaml file, or a `MagicMock`
+  from a spec-mock config manager in tests) takes the existing
+  "no logger config" warning path instead of breaking every subsequent
+  `gpclog.get_logger()` call with an uncached name. This also removes
+  order-dependent failures when running test files in isolation.
+  - `gpmq.log` 不再把未验证类型的对象装入 gpclog 的进程级全局配置。
+    `get_config("logs")` 的返回值现在会做类型检查：只有真正的
+    `GPConfigFolder` 才会被安装；其余情况（`logs` 是未注册 yaml 文件时
+    返回的裸 dict，或测试中 spec-mock 配置管理器返回的 `MagicMock`）走
+    既有的"无日志配置"告警路径，而不再让后续所有未缓存的
+    `gpclog.get_logger()` 调用报错。同时消除了单文件运行测试时的
+    顺序依赖失败。
+
+### Changed
+
+- Dropped the transitional mypy overrides for `gpconfig` (it ships
+  `py.typed` since 0.5.1, now our dependency floor); the `gpclog` override
+  remains until it ships its own `py.typed`.
+  - 移除了针对 `gpconfig` 的过渡性 mypy override（gpconfig 0.5.1 起随包
+    发布 `py.typed`，且已是本包依赖地板）；`gpclog` 的 override 保留至
+    其发布自己的 `py.typed`。
+
+---
+
 ## [0.5.1] - 2026-10-20
 
 ### Added
@@ -112,5 +183,6 @@ GPMQ 的首个 PyPI 发布版本（基于 Redis Streams 的轻量级 Python 分�
 
 ---
 
+[0.6.0]: https://github.com/LinnetCodes/gpmq/compare/version-0.5.1...version-0.6.0
 [0.5.0]: https://github.com/LinnetCodes/gpmq/compare/version-0.4.0...HEAD
 [0.4.0]: https://github.com/LinnetCodes/gpmq/releases/tag/version-0.4.0
