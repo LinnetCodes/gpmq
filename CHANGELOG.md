@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.7.0] - 2026-10-27
+
+### Fixed
+
+- **Idle workers no longer stall in transparent retry loops under
+  redis-py ≥ 6** (any install resolving `redis>=5.0.0` to 6.x/8.x).
+  redis-py 6.0 changed its defaults to `socket_timeout=5s` with 10
+  built-in retries; gpmq never passed `socket_timeout` explicitly, so the
+  client timeout raced — and by network RTT always lost to — the server's
+  5s `XREADGROUP BLOCK 5000` nil reply. Every idle read was then
+  transparently re-issued, stretching empty reads from 5s to 10-60s and
+  eventually surfacing `TimeoutError` after retries exhausted. The
+  connection now sets `socket_timeout` explicitly from the new
+  `redis_socket_timeout` config field (default `10.0` = 5s block + 5s
+  margin), per redis-py's official guidance that socket_timeout must
+  exceed the blocking command duration. Real hangs (dead server /
+  half-open connection) are still detected within the bounded timeout.
+  - 修复 redis-py ≥ 6 下空闲 worker 陷入透明重试循环的问题（任何把
+    `redis>=5.0.0` 解析到 6.x/8.x 的安装都受影响）。redis-py 6.0 起默认
+    `socket_timeout=5s` 且内置 10 次重试；gpmq 此前未显式传
+    `socket_timeout`，客户端超时与服务端 5s 的 `XREADGROUP BLOCK 5000`
+    空回复竞态——受网络往返影响几乎必然先触发——随后整条阻塞命令被
+    透明重发，空读从 5s 拖长到 10-60s，重试用尽后抛出 `TimeoutError`。
+    现在连接显式从新增的 `redis_socket_timeout` 配置字段取值（默认
+    `10.0` = 5s 阻塞 + 5s 余量），遵循 redis-py 官方指引"socket_timeout
+    必须大于阻塞命令时长"。真实挂死（服务端僵死/半开连接）仍在有界
+    超时内被检出。
+
+### Added
+
+- **`redis_socket_timeout` config field** (`GPMQConfig`, default `10.0`,
+  must be `> 5.0`): seconds before the Redis client gives up on a socket
+  read. Zero-migration — existing `common.yaml` files without the key
+  automatically get the fixed default; special deployments can override
+  it via `gpmq/common.yaml`.
+  - 新增 `redis_socket_timeout` 配置字段（`GPMQConfig`，默认 `10.0`，必须
+    `> 5.0`）：Redis 客户端单次 socket 读的超时秒数。零迁移——存量
+    `common.yaml` 无此键即自动获得修复后的默认值；特殊部署可经
+    `gpmq/common.yaml` 覆写。
+
+---
+
 ## [0.6.0] - 2026-10-23
 
 ### ⚠️ Breaking Changes
@@ -183,6 +225,7 @@ GPMQ 的首个 PyPI 发布版本（基于 Redis Streams 的轻量级 Python 分�
 
 ---
 
+[0.7.0]: https://github.com/LinnetCodes/gpmq/compare/version-0.6.0...version-0.7.0
 [0.6.0]: https://github.com/LinnetCodes/gpmq/compare/version-0.5.1...version-0.6.0
 [0.5.0]: https://github.com/LinnetCodes/gpmq/compare/version-0.4.0...HEAD
 [0.4.0]: https://github.com/LinnetCodes/gpmq/releases/tag/version-0.4.0
