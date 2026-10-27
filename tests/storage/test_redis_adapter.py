@@ -397,3 +397,29 @@ def test_connect_socket_timeout_default_is_10(redis_config):
         assert conn_kwargs["socket_timeout"] == 10.0
     finally:
         adapter.disconnect()
+
+
+def test_idle_xreadgroup_returns_at_block_cadence(redis_adapter):
+    """Idle XREADGROUP(block_ms=5000) must return at ~5s, not 10s+.
+
+    Regression test for the redis-py >= 6 default-socket_timeout race: with
+    socket_timeout <= block_ms the client timeout fires first and redis-py
+    transparently re-issues the blocking command, so an idle read takes at
+    least 2x block. With redis_socket_timeout=10.0 the server's nil reply
+    wins the race and the read returns at the block cadence.
+    """
+    stream = "test:stream:idle"
+    group = "test_idle_group"
+    redis_adapter.xgroup_destroy(stream, group)
+    redis_adapter.clear_stream(stream)
+    try:
+        redis_adapter.xgroup_create(stream, group)
+        start = time.monotonic()
+        messages = redis_adapter.xreadgroup(
+            group, "consumer1", {stream: ">"}, count=1, block_ms=5000
+        )
+        elapsed = time.monotonic() - start
+        assert messages == []
+        assert 4.5 <= elapsed < 9.0
+    finally:
+        redis_adapter.clear_stream(stream)
