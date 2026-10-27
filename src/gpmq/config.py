@@ -43,6 +43,8 @@ class GPMQConfig(GPConfig):
         redis_password: Redis password (empty string if none)
         redis_max_retries: Maximum connection retry attempts
         redis_retry_delay: Base delay for retry in seconds
+        redis_socket_timeout: Redis socket timeout in seconds (must exceed
+            the worker XREADGROUP block time of 5s)
         stream_name: Name of the Redis Stream
         heartbeat_interval: Heartbeat interval in seconds
         registry_key_prefix: Prefix for registry keys in Redis
@@ -88,6 +90,13 @@ class GPMQConfig(GPConfig):
     redis_retry_delay: float = Field(
         default=1.0, ge=0.1, description="Base retry delay in seconds"
     )
+    redis_socket_timeout: float = Field(
+        default=10.0,
+        description=(
+            "Redis socket timeout in seconds (must exceed the worker "
+            "XREADGROUP block time of 5s; see validator)"
+        ),
+    )
 
     # Stream config
     stream_name: str = Field(default="gpmq:messages", description="Redis Stream name")
@@ -128,6 +137,30 @@ class GPMQConfig(GPConfig):
                 f"heartbeat on a hardcoded 5s cadence, and the stale-detection "
                 f"threshold is heartbeat_interval*3, so a smaller interval would "
                 f"falsely flag healthy workers as stale"
+            )
+        return v
+
+    @field_validator("redis_socket_timeout")
+    @classmethod
+    def _ensure_socket_timeout_above_block(cls, v: float) -> float:
+        """Reject redis_socket_timeout <= the worker XREADGROUP block time.
+
+        Workers issue a hardcoded XREADGROUP with block_ms=5000 (worker.py
+        _read_and_process). redis-py's official guidance requires
+        socket_timeout strictly greater than any blocking command duration:
+        at <= 5s the client timeout races (and by network RTT, loses to)
+        the server's 5s nil reply, so redis-py >= 6 disconnects and
+        transparently re-issues the whole blocking command — idle reads
+        then take multiples of 5s and eventually raise TimeoutError after
+        the built-in retries are exhausted.
+        """
+        if v <= 5.0:
+            raise ValueError(
+                f"redis_socket_timeout must be > 5.0 seconds (got {v}); workers "
+                f"issue a hardcoded XREADGROUP with block_ms=5000, and redis-py "
+                f"requires socket_timeout strictly greater than the block "
+                f"duration, otherwise every idle read races the client timeout "
+                f"and is transparently retried"
             )
         return v
 

@@ -98,6 +98,29 @@ class TestGPMQConfig:
         assert GPMQConfig().heartbeat_interval == 10
 
 
+class TestRedisSocketTimeout:
+    """Tests for the redis_socket_timeout field (redis-py >=6 default race fix)."""
+
+    def test_default_socket_timeout(self):
+        """Default must be 10.0 = worker block (5s) + margin."""
+        config = GPMQConfig()
+        assert config.redis_socket_timeout == 10.0
+
+    def test_socket_timeout_custom_value(self):
+        """Explicit values must pass through."""
+        config = GPMQConfig(redis_socket_timeout=30.0)
+        assert config.redis_socket_timeout == 30.0
+
+    def test_socket_timeout_must_exceed_worker_block(self):
+        """Values <= 5.0 (hardcoded worker XREADGROUP block_ms=5000) must be rejected."""
+        with pytest.raises(Exception):  # Pydantic ValidationError
+            GPMQConfig(redis_socket_timeout=5.0)
+        with pytest.raises(Exception):  # Pydantic ValidationError
+            GPMQConfig(redis_socket_timeout=1.0)
+        # Boundary: anything strictly above 5.0 is accepted.
+        assert GPMQConfig(redis_socket_timeout=5.5).redis_socket_timeout == 5.5
+
+
 class TestPublisherConfig:
     """Tests for PublisherConfig."""
 
