@@ -363,3 +363,37 @@ def test_get_consumer_group_workers_empty(redis_adapter):
     """Should return empty list for subscriber with no workers."""
     workers = redis_adapter.get_consumer_group_workers("nonexistent-sub")
     assert workers == []
+
+
+def test_connect_passes_socket_timeout_explicitly():
+    """connect() must pass redis_socket_timeout to redis.Redis.
+
+    redis-py >= 6 defaults to socket_timeout=5s with built-in retries;
+    leaving it implicit races the worker's 5s XREADGROUP block. Explicit
+    is the contract.
+    """
+    from unittest.mock import MagicMock, patch
+
+    from gpmq.config import GPMQConfig
+    from gpmq.storage.redis_adapter import RedisAdapter
+
+    adapter = RedisAdapter(GPMQConfig(redis_socket_timeout=12.5))
+    with patch("gpmq.storage.redis_adapter.redis.Redis") as mock_redis:
+        mock_redis.return_value = MagicMock()
+        adapter.connect()
+
+    _, kwargs = mock_redis.call_args
+    assert kwargs["socket_timeout"] == 12.5
+
+
+def test_connect_socket_timeout_default_is_10(redis_config):
+    """Live client must carry the 10.0 default from config (integration)."""
+    from gpmq.storage.redis_adapter import RedisAdapter
+
+    adapter = RedisAdapter(redis_config)
+    adapter.connect()
+    try:
+        conn_kwargs = adapter._require_client().connection_pool.connection_kwargs
+        assert conn_kwargs["socket_timeout"] == 10.0
+    finally:
+        adapter.disconnect()

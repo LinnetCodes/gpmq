@@ -110,6 +110,7 @@ class RedisAdapter:
                 password=self._config.redis_password
                 if self._config.redis_password
                 else None,
+                socket_timeout=self._config.redis_socket_timeout,
                 decode_responses=True,
             )
             self._client.ping()  # Verify connection
