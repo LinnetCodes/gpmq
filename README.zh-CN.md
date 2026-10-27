@@ -285,6 +285,7 @@ GPMQ 采用两层配置机制：**公共配置**（`gpmq/common.yaml`）提供�
 | `redis_password` | str | `""` | Redis 密码 |
 | `redis_max_retries` | int | `3` | 最大连接重试次数 |
 | `redis_retry_delay` | float | `1.0` | 重试基础延迟（秒） |
+| `redis_socket_timeout` | float | `10.0` | Redis socket 超时（秒）；必须大于 worker 读取阻塞时长（5s）——避免 redis-py ≥6 的默认 5s 与空读竞态触发透明重试 |
 | `stream_name` | str | `"gpmq:messages"` | Redis Stream 名称 |
 | `heartbeat_interval` | int | `10` | 心跳间隔（秒） |
 | `registry_key_prefix` | str | `"gpmq:"` | Redis 键前缀（自动追加 `:`） |

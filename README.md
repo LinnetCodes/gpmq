@@ -285,6 +285,7 @@ Shared settings for all components. Loaded as the base layer for both publishers
 | `redis_password` | str | `""` | Redis password |
 | `redis_max_retries` | int | `3` | Max connection retry attempts |
 | `redis_retry_delay` | float | `1.0` | Base retry delay in seconds |
+| `redis_socket_timeout` | float | `10.0` | Redis socket timeout in seconds; must exceed the worker read block (5s) — avoids the redis-py ≥6 default (5s) racing idle reads into transparent retries |
 | `stream_name` | str | `"gpmq:messages"` | Redis Stream name |
 | `heartbeat_interval` | int | `10` | Heartbeat interval in seconds |
 | `registry_key_prefix` | str | `"gpmq:"` | Redis key prefix (auto-appends `:`) |
