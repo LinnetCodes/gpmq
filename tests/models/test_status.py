@@ -44,7 +44,7 @@ class TestWorkerStatus:
         assert status.process_id == 12345
         assert status.status == WorkerState.RUNNING
         assert status.last_activity == datetime(2026, 3, 25, 10, 30, 0)
-        assert status.current_message_id is None
+        assert status.last_message_id is None
         assert status.messages_processed == 0
 
     def test_status_creation_busy(self):
@@ -53,13 +53,13 @@ class TestWorkerStatus:
             worker_id="worker-2",
             process_id=12346,
             status=WorkerState.BUSY,
-            current_message_id="1234567890-0",
+            last_message_id="1234567890-0",
             messages_processed=42,
             last_activity=datetime(2026, 3, 25, 11, 0, 0),
         )
 
         assert status.status == WorkerState.BUSY
-        assert status.current_message_id == "1234567890-0"
+        assert status.last_message_id == "1234567890-0"
         assert status.messages_processed == 42
 
     def test_status_creation_stopped(self):
@@ -112,7 +112,7 @@ class TestWorkerStatus:
             worker_id="worker-1",
             process_id=12345,
             status=WorkerState.BUSY,
-            current_message_id="123-0",
+            last_message_id="123-0",
             messages_processed=10,
             last_activity=datetime(2026, 3, 25, 10, 30, 0),
         )
@@ -122,7 +122,7 @@ class TestWorkerStatus:
         assert data["worker_id"] == "worker-1"
         assert data["process_id"] == 12345
         assert data["status"] == WorkerState.BUSY
-        assert data["current_message_id"] == "123-0"
+        assert data["last_message_id"] == "123-0"
         assert data["messages_processed"] == 10
 
     def test_status_json_serialization(self):
@@ -160,7 +160,7 @@ class TestWorkerStatus:
             "worker_id": "worker-1",
             "process_id": 12345,
             "status": "busy",
-            "current_message_id": "123-0",
+            "last_message_id": "123-0",
             "messages_processed": 10,
             "last_activity": "2026-03-25T10:30:00",
         }
@@ -168,5 +168,5 @@ class TestWorkerStatus:
         status = WorkerStatus.model_validate(data)
 
         assert status.status == WorkerState.BUSY
-        assert status.current_message_id == "123-0"
+        assert status.last_message_id == "123-0"
         assert status.messages_processed == 10
