@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- **Worker live-status fields ride the existing worker heartbeat
+  (R-001, zero extra round trips)**: `messages_processed`,
+  `last_activity`, and the renamed `last_message_id` (was
+  `current_message_id`, never populated) are maintained in-process and
+  flushed to Redis with the heartbeat — no per-message writes.
+  `WorkerManager.get_worker_status()` now assembles them from the
+  registry (values can be a few seconds stale), and `last_activity` is
+  the real last-completed-message time instead of the query time. A
+  message currently stuck mid-processing is located via the consumer's
+  PEL (XPENDING), not via `last_message_id`.
+  - worker 实时状态字段随现有心跳搭车写入 Redis（R-001，零新增往返）：
+    `messages_processed`、`last_activity` 与更名后的 `last_message_id`
+    （原 `current_message_id`，从未被写入）在进程内维护、随心跳
+    flush——不逐消息写 Redis。`WorkerManager.get_worker_status()` 从
+    registry 组装（数据可能数秒陈旧），`last_activity` 为真实的最后
+    完成消息时刻而非查询时刻。卡在处理中的消息通过消费者 PEL
+    （XPENDING）定位，而非 `last_message_id`。
+
+### Changed
+
+- **Worker heartbeat throttle tightened from a hardcoded 5s to a named
+  4s constant** (`HEARTBEAT_THROTTLE_SECONDS`): the worst-case gap
+  between heartbeats (throttle + 5s XREADGROUP block) drops from ~10s
+  to ~9s, keeping the minimum-config stale threshold
+  (`heartbeat_interval=5` → 15s) a ~1.7x margin. Steady-state
+  heartbeat write frequency is unchanged.
+  - worker 心跳节流由硬编码 5s 收紧为具名常量 4s
+    （`HEARTBEAT_THROTTLE_SECONDS`）：最坏心跳间隔（节流 + 5s
+    XREADGROUP 阻塞）从 ~10s 降至 ~9s，最小配置下的僵死判定阈值
+    （`heartbeat_interval=5` → 15s）裕量升至约 1.7x；稳态心跳写入
+    频率不变。
+
+---
+
 ## [0.7.0] - 2026-10-27
 
 ### Fixed
