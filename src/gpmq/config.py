@@ -74,9 +74,7 @@ class GPMQConfig(GPConfig):
             segments (double/edge slashes) are dropped, so ``"gpmq//common/"``
             derives ``"gpmq.common"``.
         """
-        segments = [
-            s for s in cls.default_cfg_path.replace("\\", "/").split("/") if s
-        ]
+        segments = [s for s in cls.default_cfg_path.replace("\\", "/").split("/") if s]
         return ".".join(segments)
 
     # Redis connection

@@ -570,7 +570,11 @@ class TestWorkerRegistry:
         mock_redis.update_worker_heartbeat.assert_called_once_with(
             "test-subscriber",
             "test-subscriber-hostA-worker-0",
-            extra={"messages_processed": 0, "last_activity": 0.0, "last_message_id": None},
+            extra={
+                "messages_processed": 0,
+                "last_activity": 0.0,
+                "last_message_id": None,
+            },
         )
 
 
