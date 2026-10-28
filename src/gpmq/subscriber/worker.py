@@ -29,6 +29,15 @@ if TYPE_CHECKING:
 # Any; annotate the module-global logger as Any until it does.
 logger: Any = None
 
+# Worker-level heartbeat throttle: minimum seconds between heartbeat
+# flushes to Redis. Distinct from the ``heartbeat_interval`` config, which
+# is NOT the write cadence — it is the base for freshness thresholds
+# (stale/zombie detection at heartbeat_interval * 3). Kept below the 5s
+# XREADGROUP block so the worst-case gap between heartbeats
+# (throttle + block = 4 + 5 = 9s, when traffic ends right after a skipped
+# check) stays well under the minimum threshold (5 * 3 = 15s).
+HEARTBEAT_THROTTLE_SECONDS: float = 4.0
+
 
 class Worker(Process):
     """Worker process that consumes messages from a Redis consumer group.
@@ -299,7 +308,7 @@ class Worker(Process):
         """
         try:
             _now = time.time()
-            if _now >= self._last_heartbeat + 5:
+            if _now >= self._last_heartbeat + HEARTBEAT_THROTTLE_SECONDS:
                 self._redis.update_worker_heartbeat(
                     self._subscriber_name,
                     self._worker_id,

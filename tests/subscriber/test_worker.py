@@ -1087,3 +1087,21 @@ class TestWorkerLiveStatus:
                 "last_message_id": None,
             },
         )
+
+    def test_heartbeat_throttle_is_four_seconds(self):
+        """Heartbeat re-fires 4s after the last flush (not the old 5s)."""
+        import time as _time
+
+        worker = self._make_worker(["test_type"])
+        worker._redis.xreadgroup.return_value = []
+
+        # 4.1s since last flush: fires under the new 4s throttle,
+        # would NOT have fired under the old hardcoded 5s.
+        worker._last_heartbeat = _time.time() - 4.1
+        worker._read_and_process()
+        worker._redis.update_worker_heartbeat.assert_called_once()
+
+        # Within the window: stays silent.
+        worker._last_heartbeat = _time.time()
+        worker._read_and_process()
+        assert worker._redis.update_worker_heartbeat.call_count == 1
