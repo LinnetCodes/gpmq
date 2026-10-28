@@ -21,7 +21,8 @@ class WorkerStatus(BaseModel):
 
     Live fields (``last_message_id`` / ``messages_processed`` /
     ``last_activity``) are maintained in-process by the worker and flushed
-    to Redis on the worker heartbeat cadence (~4-5s), so values read from
+    to Redis with the worker heartbeat (typically every ~5s; at worst
+    every ~9s — 4s throttle + 5s read block), so values read from
     ``WorkerManager.get_worker_status()`` can be a few seconds stale, and
     the most recent counter increments are lost if the worker is killed.
     """

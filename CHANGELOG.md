@@ -35,12 +35,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   4s constant** (`HEARTBEAT_THROTTLE_SECONDS`): the worst-case gap
   between heartbeats (throttle + 5s XREADGROUP block) drops from ~10s
   to ~9s, keeping the minimum-config stale threshold
-  (`heartbeat_interval=5` → 15s) a ~1.7x margin. Steady-state
+  (`heartbeat_interval=5` → 15s) a ~1.7x margin. Idle steady-state
   heartbeat write frequency is unchanged.
   - worker 心跳节流由硬编码 5s 收紧为具名常量 4s
     （`HEARTBEAT_THROTTLE_SECONDS`）：最坏心跳间隔（节流 + 5s
     XREADGROUP 阻塞）从 ~10s 降至 ~9s，最小配置下的僵死判定阈值
-    （`heartbeat_interval=5` → 15s）裕量升至约 1.7x；稳态心跳写入
+    （`heartbeat_interval=5` → 15s）裕量升至约 1.7x；空闲稳态心跳写入
     频率不变。
 
 ---
