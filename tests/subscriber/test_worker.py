@@ -568,7 +568,9 @@ class TestWorkerRegistry:
         worker._read_and_process()
 
         mock_redis.update_worker_heartbeat.assert_called_once_with(
-            "test-subscriber", "test-subscriber-hostA-worker-0"
+            "test-subscriber",
+            "test-subscriber-hostA-worker-0",
+            extra={"messages_processed": 0, "last_activity": 0.0, "last_message_id": None},
         )
 
 
@@ -1000,3 +1002,88 @@ class TestWorkerReadBatch:
             assert worker._redis.publish.call_count == 2
         finally:
             HandlerRegistry.clear()
+
+
+class TestWorkerLiveStatus:
+    """Tests for in-process live-status counters (R-001)."""
+
+    @staticmethod
+    def _make_worker(message_types: list[str]) -> Any:
+        from gpmq.subscriber.worker import Worker
+
+        config_dict = _make_subscriber_config(message_types=message_types)
+        worker = Worker(
+            subscriber_name="test-subscriber",
+            stream_name="gpmq:messages",
+            message_types=message_types,
+            worker_id="test-subscriber-hostA-worker-0",
+            hostname="hostA",
+            config_dict=config_dict,
+        )
+        worker._redis = MagicMock()
+        worker._audit = MagicMock()
+        return worker
+
+    def test_success_records_activity(self):
+        """A processed message increments counters and sets last_message_id."""
+        msg_id, fields = _make_stream_message(msg_id="111-0", msg_type="test_type")
+        worker = self._make_worker(["test_type"])
+        handler = MagicMock(return_value=None)
+
+        worker._process_message(msg_id, fields, handler)
+
+        assert worker._messages_processed == 1
+        assert worker._last_message_id == "111-0"
+        assert worker._last_activity > 0.0
+
+    def test_handler_exception_records_activity(self):
+        """EXCEPTION outcomes also count as processed."""
+        msg_id, fields = _make_stream_message(msg_id="222-0", msg_type="test_type")
+        worker = self._make_worker(["test_type"])
+        handler = MagicMock(side_effect=RuntimeError("boom"))
+
+        worker._process_message(msg_id, fields, handler)
+
+        assert worker._messages_processed == 1
+        assert worker._last_message_id == "222-0"
+
+    def test_poison_message_records_activity(self):
+        """Poison dispositions count as processed."""
+        fields = {"type": "test_type", "payload": "{not json"}
+        worker = self._make_worker(["test_type"])
+        handler = MagicMock()
+
+        worker._process_message("333-0", fields, handler)
+
+        handler.assert_not_called()
+        assert worker._messages_processed == 1
+        assert worker._last_message_id == "333-0"
+
+    def test_filtered_message_not_counted(self):
+        """Messages filtered out by type are not recorded."""
+        msg_id, fields = _make_stream_message(msg_id="444-0", msg_type="other_type")
+        worker = self._make_worker(["test_type"])
+        handler = MagicMock()
+
+        worker._process_message(msg_id, fields, handler)
+
+        assert worker._messages_processed == 0
+        assert worker._last_message_id is None
+        assert worker._last_activity == 0.0
+
+    def test_heartbeat_carries_status_fields(self):
+        """The throttled heartbeat flushes the live-status fields via extra."""
+        worker = self._make_worker(["test_type"])
+        worker._redis.xreadgroup.return_value = []
+
+        worker._read_and_process()
+
+        worker._redis.update_worker_heartbeat.assert_called_once_with(
+            "test-subscriber",
+            "test-subscriber-hostA-worker-0",
+            extra={
+                "messages_processed": 0,
+                "last_activity": 0.0,
+                "last_message_id": None,
+            },
+        )

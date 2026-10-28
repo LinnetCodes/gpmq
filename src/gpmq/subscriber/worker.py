@@ -86,6 +86,12 @@ class Worker(Process):
         # internal heartbeat record
         self._last_heartbeat: float = 0.0
 
+        # live status counters (R-001): maintained in-process only, flushed
+        # to Redis by piggybacking on the heartbeat — never per message.
+        self._messages_processed: int = 0
+        self._last_activity: float = 0.0
+        self._last_message_id: str | None = None
+
         global logger
         _sn = self._parse_worker_sn()
         logger = get_logger(self._config_dict["log_category"], _sn)
@@ -267,20 +273,7 @@ class Worker(Process):
             logger.error("trace back: \n{}", traceback.format_exc())
             return
 
-        # Update heartbeat every loop iteration
-        try:
-            _now = time.time()
-            if _now >= self._last_heartbeat + 5:
-                self._redis.update_worker_heartbeat(
-                    self._subscriber_name, self._worker_id
-                )
-                self._last_heartbeat = _now
-        except Exception:
-            logger.error(
-                "Heartbeat update failed for worker {}\n{}",
-                self._worker_id,
-                traceback.format_exc(),
-            )
+        self._maybe_update_heartbeat()
 
         if not messages:
             return
@@ -295,6 +288,45 @@ class Worker(Process):
                     continue
 
                 self._process_message(msg_id, fields, handler)
+
+    def _maybe_update_heartbeat(self) -> None:
+        """Flush the worker heartbeat (throttled), piggybacking live status.
+
+        Throttled to ``HEARTBEAT_THROTTLE_SECONDS``; the live-status
+        counters ride the same HGET+HSET, adding zero extra round trips
+        per message (R-001). Failures are logged and swallowed — a lost
+        heartbeat must never kill the read loop.
+        """
+        try:
+            _now = time.time()
+            if _now >= self._last_heartbeat + 5:
+                self._redis.update_worker_heartbeat(
+                    self._subscriber_name,
+                    self._worker_id,
+                    extra={
+                        "messages_processed": self._messages_processed,
+                        "last_activity": self._last_activity,
+                        "last_message_id": self._last_message_id,
+                    },
+                )
+                self._last_heartbeat = _now
+        except Exception:
+            logger.error(
+                "Heartbeat update failed for worker {}\n{}",
+                self._worker_id,
+                traceback.format_exc(),
+            )
+
+    def _record_message_activity(self, msg_id: str) -> None:
+        """Record that this worker brought a message to a terminal outcome.
+
+        Called on every terminal path of ``_process_message`` (handler
+        result, handler exception) and on poison dispositions. Must stay
+        Redis-free: counters are flushed to Redis only by the heartbeat.
+        """
+        self._messages_processed += 1
+        self._last_activity = time.time()
+        self._last_message_id = msg_id
 
     def _handle_poison_message(
         self, msg_id: str, fields: dict[str, str], exc: BaseException
@@ -335,6 +367,7 @@ class Worker(Process):
                 error_message=f"Malformed message: {exc}",
                 error_traceback=traceback.format_exc(),
             )
+            self._record_message_activity(msg_id)
 
             if self._audit is not None:
                 try:
@@ -476,6 +509,7 @@ class Worker(Process):
                 error_message=str(exc),
                 error_traceback=tb_str,
             )
+            self._record_message_activity(msg_id)
             if self._audit:
                 self._audit.save_result(msg_id, process_result)
             self._redis.xack(self._stream_name, self._subscriber_name, msg_id)
@@ -527,6 +561,8 @@ class Worker(Process):
                 processing_time=elapsed,
                 data=result if isinstance(result, dict) else {"value": result},
             )
+
+        self._record_message_activity(msg_id)
 
         # --- 5. Save to audit ---
         if self._audit:
