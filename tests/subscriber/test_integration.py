@@ -286,3 +286,87 @@ class TestWorkerMessageProcessing:
                 redis_adapter.xgroup_destroy(stream_name, group_name)
             except Exception:
                 pass
+
+
+class TestWorkerHeartbeatStatusFlush:
+    """Integration: live-status fields ride the heartbeat into Redis (R-001)."""
+
+    def test_heartbeat_flush_carries_counters(
+        self, redis_adapter: RedisAdapter, tmp_path
+    ):
+        """After processing a message, the next heartbeat flush carries the
+        live-status fields; get_consumer_group_workers reads them back."""
+        HandlerRegistry.clear()
+
+        @message_handler(message_types=["integ_hb_type"])
+        def _hb_handler(msg: Message) -> None:
+            return None
+
+        HandlerRegistry.register(_hb_handler)
+
+        group_name = "integ-hb-sub"
+        stream_name = "gpmq:messages"
+        worker_id = f"{group_name}-worker-0"
+
+        config_dict = {
+            "name": group_name,
+            "handlers": [
+                {
+                    "message_types": ["integ_hb_type"],
+                    "handler": "dummy.handler",
+                }
+            ],
+            "stream_name": stream_name,
+            "redis_host": "127.0.0.1",
+            "redis_port": 6379,
+            "redis_password": "123456",
+            "redis_db": 15,
+            "heartbeat_interval": 300,
+            "log_category": "gpmq",
+        }
+
+        worker = Worker(
+            subscriber_name=group_name,
+            stream_name=stream_name,
+            message_types=["integ_hb_type"],
+            worker_id=worker_id,
+            hostname="test-host",
+            config_dict=config_dict,
+        )
+        worker._redis = redis_adapter
+
+        try:
+            # The consumer group must exist before XREADGROUP (workers do
+            # not create it; the Subscriber does in production).
+            redis_adapter.xgroup_create(stream_name, group_name)
+
+            worker._register_self()
+
+            msg_id = redis_adapter.xadd(
+                stream_name,
+                {
+                    "type": "integ_hb_type",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "publisher": "integ-test-pub",
+                    "payload": json.dumps({"n": 1}),
+                },
+            )
+
+            # One loop: reads + processes the message. The first heartbeat
+            # flush (counters still zero) happens before processing.
+            worker._read_and_process()
+            assert worker._messages_processed == 1
+
+            # Force the next throttled flush deterministically.
+            worker._last_heartbeat = 0.0
+            worker._maybe_update_heartbeat()
+
+            workers = redis_adapter.get_consumer_group_workers(group_name)
+            assert len(workers) == 1
+            info = workers[0]
+            assert info["messages_processed"] == 1
+            assert info["last_message_id"] == msg_id
+            assert float(info["last_activity"]) > 0.0
+        finally:
+            redis_adapter.unregister_worker(group_name, worker_id)
+            HandlerRegistry.clear()
