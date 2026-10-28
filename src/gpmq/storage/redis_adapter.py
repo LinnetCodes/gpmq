@@ -643,12 +643,21 @@ class RedisAdapter:
 
         self._retry_on_transient_errors(_register)
 
-    def update_worker_heartbeat(self, subscriber_name: str, worker_id: str) -> None:
+    def update_worker_heartbeat(
+        self,
+        subscriber_name: str,
+        worker_id: str,
+        extra: dict[str, Any] | None = None,
+    ) -> None:
         """Update a worker's heartbeat timestamp.
 
         Args:
             subscriber_name: Subscriber/consumer group name
             worker_id: Unique worker identifier
+            extra: Optional extra fields merged into the worker info JSON
+                (e.g. live-status counters flushed with the heartbeat).
+                Values must be JSON-serializable; None (default) keeps the
+                behaviour identical to a plain heartbeat update.
 
         Raises:
             RedisConnectionError: On connection failure after retries
@@ -662,6 +671,8 @@ class RedisAdapter:
             if raw:
                 info = json.loads(raw)
                 info["last_heartbeat"] = str(time.time())
+                if extra:
+                    info.update(extra)
                 client.hset(key, worker_id, json.dumps(info))
 
         self._retry_on_transient_errors(_update)

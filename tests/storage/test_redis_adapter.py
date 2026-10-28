@@ -343,6 +343,40 @@ def test_update_worker_heartbeat(redis_adapter):
     assert float(workers[0]["last_heartbeat"]) > 1713500100.0
 
 
+def test_update_worker_heartbeat_with_extra(redis_adapter):
+    """extra fields are merged into the worker info JSON alongside last_heartbeat."""
+    redis_adapter.register_worker(
+        "test-hb-extra-sub",
+        "sub-server1-worker-0",
+        {
+            "hostname": "h",
+            "pid": 1,
+            "status": "running",
+            "started_at": "1.0",
+            "last_heartbeat": "1.0",
+        },
+    )
+    try:
+        redis_adapter.update_worker_heartbeat(
+            "test-hb-extra-sub",
+            "sub-server1-worker-0",
+            extra={
+                "messages_processed": 7,
+                "last_activity": 123.4,
+                "last_message_id": "42-0",
+            },
+        )
+        workers = redis_adapter.get_consumer_group_workers("test-hb-extra-sub")
+        assert len(workers) == 1
+        info = workers[0]
+        assert info["messages_processed"] == 7
+        assert info["last_activity"] == 123.4
+        assert info["last_message_id"] == "42-0"
+        assert float(info["last_heartbeat"]) > 1.0
+    finally:
+        redis_adapter.unregister_worker("test-hb-extra-sub", "sub-server1-worker-0")
+
+
 def test_unregister_worker(redis_adapter):
     """unregister_worker should remove a worker from the consumer group."""
     info = {
