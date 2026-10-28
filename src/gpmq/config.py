@@ -124,19 +124,23 @@ class GPMQConfig(GPConfig):
     def _ensure_heartbeat_above_cadence(cls, v: int) -> int:
         """Reject heartbeat_interval below 5.
 
-        Workers write their worker-level heartbeat on a hardcoded 5-second
-        cadence (worker.py heartbeat throttle). The 3.3 zombie-detection
-        threshold is heartbeat_interval * 3, so an interval below 5 would make
-        that threshold (interval*3) collapse to or below the cadence window,
-        causing healthy workers to be falsely flagged ERROR/stale. Enforcing a
-        minimum of 5 keeps the threshold (>=15s) comfortably above the cadence.
+        Workers flush their worker-level heartbeat on a 4-second throttle
+        inside a 5-second XREADGROUP block (worker.py
+        HEARTBEAT_THROTTLE_SECONDS), so the worst-case gap between
+        heartbeats is throttle + block = 4 + 5 = 9s (traffic ending right
+        after a skipped check pushes two checks one full block apart).
+        The stale-detection threshold is heartbeat_interval * 3; the
+        invariant it relies on is ``heartbeat_interval * 3 > 9s``. An
+        interval below 5 would put the threshold (<= 12s) too close to
+        that worst case and risk flagging healthy workers as stale.
         """
         if v < 5:
             raise ValueError(
-                f"heartbeat_interval must be >= 5 (got {v}); workers write their "
-                f"heartbeat on a hardcoded 5s cadence, and the stale-detection "
-                f"threshold is heartbeat_interval*3, so a smaller interval would "
-                f"falsely flag healthy workers as stale"
+                f"heartbeat_interval must be >= 5 (got {v}); workers flush "
+                f"their heartbeat at worst every ~9s (4s throttle + 5s read "
+                f"block), and the stale-detection threshold is "
+                f"heartbeat_interval*3, so a smaller interval would falsely "
+                f"flag healthy workers as stale"
             )
         return v
 
