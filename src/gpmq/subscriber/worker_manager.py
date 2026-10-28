@@ -21,6 +21,35 @@ if TYPE_CHECKING:
 logger: Any = None
 
 
+def _as_float(value: Any) -> float | None:
+    """Best-effort float parse; None on missing/malformed input."""
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    return result
+
+
+def _as_int(value: Any) -> int:
+    """Best-effort int parse; 0 on missing/malformed input."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _worker_activity_time(raw: dict[str, Any]) -> datetime | None:
+    """Real activity time for a worker: last completed message, else its
+    registration time. None when neither is usable (caller falls back to
+    the query time)."""
+    ts = _as_float(raw.get("last_activity"))
+    if ts is None or ts <= 0:
+        ts = _as_float(raw.get("started_at"))
+    if ts is None or ts <= 0:
+        return None
+    return datetime.fromtimestamp(ts, tz=timezone.utc)
+
+
 class WorkerManager:
     """Manages multiple :class:`Worker` processes.
 
@@ -109,13 +138,22 @@ class WorkerManager:
           (now - last_heartbeat > heartbeat_interval * 3) -> ERROR (zombie)
         - is_alive() AND heartbeat fresh -> RUNNING
 
+        Live fields (messages_processed / last_message_id / last_activity)
+        are read from the worker registry in Redis; they are flushed by
+        each worker on its heartbeat cadence, so they can be a few seconds
+        stale. When registry data is missing, last_activity degrades to
+        the query time and counters default to zero.
+
         Note: worker-level heartbeat stops updating while a worker is blocked
-        in a slow handler, so "heartbeat expired" can mean zombie OR legitimately
-        slow processing; precise distinction is deferred to R-001.
+        in a slow handler, so "heartbeat expired" can mean zombie OR
+        legitimately slow processing; the stuck message itself is visible
+        in the consumer's PEL (XPENDING), not in last_message_id (which
+        holds the last COMPLETED message).
         """
         now = datetime.now(timezone.utc)
-        # Read worker-level heartbeats from Redis (if a connection was provided).
-        heartbeat_map: dict[str, float] = {}
+        # Worker info from the Redis registry, keyed by worker_id (empty
+        # when no connection was provided or the read failed).
+        info_map: dict[str, dict[str, Any]] = {}
         if self._redis is not None:
             try:
                 raw_workers = self._redis.get_consumer_group_workers(
@@ -124,10 +162,7 @@ class WorkerManager:
                 for raw in raw_workers:
                     wid = raw.get("worker_id")
                     if wid:
-                        try:
-                            heartbeat_map[wid] = float(raw.get("last_heartbeat", 0))
-                        except (TypeError, ValueError):
-                            pass
+                        info_map[wid] = raw
             except Exception:
                 logger.error(
                     "Failed to read worker heartbeats for {}\n{}",
@@ -139,20 +174,30 @@ class WorkerManager:
 
         statuses = []
         for worker in self._workers:
+            raw = info_map.get(worker.worker_id)
+            # Default 0.0 on a missing key preserves the original semantics
+            # (missing heartbeat -> 0 -> stale -> ERROR); a malformed value
+            # parses to None -> treated as fresh (RUNNING), also as before.
+            last_hb = _as_float(raw.get("last_heartbeat", 0.0)) if raw else None
             if not worker.is_alive():
                 state = WorkerState.STOPPED
+            elif last_hb is not None and (now_ts - last_hb) > stale_threshold:
+                state = WorkerState.ERROR
             else:
-                last_hb = heartbeat_map.get(worker.worker_id)
-                if last_hb is not None and (now_ts - last_hb) > stale_threshold:
-                    state = WorkerState.ERROR
-                else:
-                    state = WorkerState.RUNNING
+                state = WorkerState.RUNNING
+            last_message_id = raw.get("last_message_id") if raw else None
             statuses.append(
                 WorkerStatus(
                     worker_id=worker.worker_id,
                     process_id=worker.pid or 0,
                     status=state,
-                    last_activity=now,
+                    last_message_id=(
+                        last_message_id if isinstance(last_message_id, str) else None
+                    ),
+                    messages_processed=_as_int(raw.get("messages_processed"))
+                    if raw
+                    else 0,
+                    last_activity=(_worker_activity_time(raw) or now) if raw else now,
                 )
             )
         return statuses

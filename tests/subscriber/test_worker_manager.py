@@ -212,3 +212,68 @@ class TestWorkerManagerGetStatus:
         statuses = manager.get_worker_status()
         assert statuses[0].status == WorkerState.RUNNING
         manager.stop()
+
+    def test_live_status_fields_assembled_from_redis(self):
+        """R-001: counters and real last_activity come from the registry."""
+        import time
+        from datetime import datetime, timezone
+        from unittest.mock import MagicMock
+        from gpmq.subscriber.worker_manager import WorkerManager
+
+        config_dict = _make_subscriber_config(workers=1)
+        subscrib_cfg = SubscriberConfig(**config_dict)
+        ctx = {"subscribe_message_types": subscrib_cfg.get_message_types()}
+
+        manager = WorkerManager(config_dict, ctx)
+        manager.start()
+        wid = manager._workers[0].worker_id
+
+        raw_ts = time.time() - 60
+        manager._redis = MagicMock()
+        manager._redis.get_consumer_group_workers.return_value = [
+            {
+                "worker_id": wid,
+                "last_heartbeat": time.time(),
+                "messages_processed": 5,
+                "last_activity": raw_ts,
+                "last_message_id": "1690000000000-3",
+                "started_at": time.time() - 3600,
+            },
+        ]
+
+        statuses = manager.get_worker_status()
+        assert statuses[0].messages_processed == 5
+        assert statuses[0].last_message_id == "1690000000000-3"
+        assert statuses[0].last_activity == datetime.fromtimestamp(
+            raw_ts, tz=timezone.utc
+        )
+        manager.stop()
+
+    def test_last_activity_falls_back_to_started_at(self):
+        """A worker that never processed anything reports its start time."""
+        import time
+        from datetime import datetime, timezone
+        from unittest.mock import MagicMock
+        from gpmq.subscriber.worker_manager import WorkerManager
+
+        config_dict = _make_subscriber_config(workers=1)
+        subscrib_cfg = SubscriberConfig(**config_dict)
+        ctx = {"subscribe_message_types": subscrib_cfg.get_message_types()}
+
+        manager = WorkerManager(config_dict, ctx)
+        manager.start()
+        wid = manager._workers[0].worker_id
+
+        started = time.time() - 3600
+        manager._redis = MagicMock()
+        manager._redis.get_consumer_group_workers.return_value = [
+            {"worker_id": wid, "last_heartbeat": time.time(), "started_at": started},
+        ]
+
+        statuses = manager.get_worker_status()
+        assert statuses[0].messages_processed == 0
+        assert statuses[0].last_message_id is None
+        assert statuses[0].last_activity == datetime.fromtimestamp(
+            started, tz=timezone.utc
+        )
+        manager.stop()
