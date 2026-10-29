@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.8.0] - 2026-10-29
+
+### Added
+
+- **Worker context finalizer (`@worker_context_finalizer`, I13)**: the
+  stop-side counterpart of `worker_context_processor`. A finalizer function
+  is resolved from the new `worker_context_finalizer` subscriber YAML key
+  (dotted import path, independently optional) and called with the live
+  worker context when the worker stops gracefully — before gpmq closes its
+  own resources, so `logger` and the embedded `publisher` are still usable.
+  Exceptions raised by the finalizer are logged and the remaining cleanup
+  continues. Hard `terminate()` remains code-free and is documented as out
+  of scope. This gives user-built context resources (database clients,
+  terminal sessions, file handles) a contractual cleanup point inside the
+  gpmq lifecycle, replacing implicit `atexit.register` workarounds.
+  - **Worker 上下文终结器（`@worker_context_finalizer`，I13）**：
+    `worker_context_processor` 的停止侧对位。通过新增的订阅者 YAML 键
+    `worker_context_finalizer`（dotted import 路径，可独立配置）解析
+    终结函数，在 worker 优雅停止时以活的 worker context 调用——先于
+    gpmq 关闭自建资源，故 `logger` 与内嵌 `publisher` 仍可用。终结器
+    抛出的异常会被记录，其余清理继续。硬 `terminate()` 下无代码可跑，
+    已在文档中披露。用户自建上下文资源（数据库客户端、终端会话、文件
+    句柄）由此获得 gpmq 生命周期内的契约化清理点，取代隐式的
+    `atexit.register` 过渡方案。
+
+---
+
 ## [0.7.1] - 2026-10-28
 
 ### Added
