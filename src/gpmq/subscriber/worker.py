@@ -79,6 +79,7 @@ class Worker(Process):
         self._config_dict = dict(config_dict)
         self._worker_ctx = dict() if context is None else context
         self._ctx_proc_func: Callable[[dict[str, Any]], dict[str, Any]] | None = None
+        self._ctx_fin_func: Callable[[dict[str, Any]], None] | None = None
         self._stop_event = (
             stop_event if stop_event is not None else multiprocessing.Event()
         )
@@ -185,6 +186,24 @@ class Worker(Process):
                     f"@worker_context_processor"
                 )
             self._ctx_proc_func = _func
+
+        # Load user-defined worker context finalizer if configured
+        if "worker_context_finalizer" in context:
+            _fin_path = context.pop("worker_context_finalizer")
+            parts = _fin_path.rsplit(".", 1)
+            if len(parts) == 1:
+                raise ImportError(
+                    f"Invalid worker_context_finalizer import path: {_fin_path}"
+                )
+            module_path, func_name = parts
+            module = importlib.import_module(module_path)
+            _fin_func = getattr(module, func_name)
+            if not getattr(_fin_func, "_gpmq_ctx_fin", False):
+                raise TypeError(
+                    f"worker context finalizer '{_fin_path}' must be decorated "
+                    f"with @worker_context_finalizer"
+                )
+            self._ctx_fin_func = _fin_func
 
         # remove context items that no longer needed
         if "config_manager_folder_path" in self._worker_ctx:
@@ -607,7 +626,25 @@ class Worker(Process):
         )
 
     def _cleanup(self) -> None:
-        """Close Redis and AuditStore connections."""
+        """Run the user context finalizer, then close gpmq-built resources.
+
+        The finalizer runs FIRST, while gpmq-built context entries (logger,
+        embedded publisher) are still usable, so a stop hook may emit a last
+        notification.  It is called on every graceful exit path (normal loop
+        exit, KeyboardInterrupt, SystemExit, crash teardown) — never on a
+        hard terminate, where no code runs at all.
+        """
+        # Call user finalizer before closing gpmq's own resources
+        if self._ctx_fin_func is not None:
+            try:
+                self._ctx_fin_func(self._worker_ctx)
+            except Exception:
+                logger.error(
+                    "Error running worker context finalizer in worker {}\n{}",
+                    self._worker_id,
+                    traceback.format_exc(),
+                )
+
         # Unregister from worker registry
         if self._redis is not None:
             try:

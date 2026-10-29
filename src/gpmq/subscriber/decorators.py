@@ -92,6 +92,82 @@ def worker_context_processor(func: F) -> F:
     return func
 
 
+def worker_context_finalizer(func: F) -> F:
+    """Decorator that validates and marks a function as a worker context finalizer.
+
+    The finalizer is the stop-side counterpart of
+    :func:`worker_context_processor`: it is called when the worker process
+    stops gracefully (read-loop exit, interrupt, or crash teardown), with the
+    worker context, so user-built resources (database clients, terminal
+    sessions, file handles...) injected via the processor can be closed.
+    It is NOT called on a hard terminate (``Process.terminate()``), where no
+    code runs at all.
+
+    The decorated function must accept exactly one parameter named
+    ``context`` (case-insensitive).  If type annotations are present, the
+    parameter must be ``dict[str, Any]`` and the return type must be
+    ``None``.  Bare ``func(context)`` without annotations is also accepted.
+
+    On success, sets ``_gpmq_ctx_fin = True`` on the function and returns it
+    unchanged (no wrapping).
+
+    Args:
+        func: The function to validate and mark.
+
+    Returns:
+        The original function, with ``_gpmq_ctx_fin`` attribute set.
+
+    Raises:
+        TypeError: If the function signature does not match the expected pattern.
+    """
+    sig = inspect.signature(func)
+    params = list(sig.parameters.values())
+
+    # 1. Must have exactly 1 parameter
+    if len(params) != 1:
+        raise TypeError(
+            f"worker context finalizer '{func.__name__}' must accept exactly "
+            f"1 parameter named 'context', got {len(params)}"
+        )
+
+    param = params[0]
+
+    # 2. Parameter must be named "context" (case-insensitive)
+    if param.name.lower() != "context":
+        raise TypeError(
+            f"worker context finalizer '{func.__name__}' parameter must be "
+            f"named 'context', got '{param.name}'"
+        )
+
+    # Expected annotation string for dict[str, Any]
+    _expected = "dict[str, Any]"
+
+    # 3. If annotation present, must be dict[str, Any]
+    if param.annotation is not inspect.Parameter.empty:
+        ann = param.annotation
+        if ann != dict[str, Any] and str(ann) != _expected:
+            raise TypeError(
+                f"worker context finalizer '{func.__name__}' parameter "
+                f"'context' annotation must be dict[str, Any], "
+                f"got {ann!r}"
+            )
+
+    # 4. If return annotation present, must be None (unlike the processor,
+    #    the finalizer is a terminal consumer of the context)
+    if sig.return_annotation is not inspect.Signature.empty:
+        if sig.return_annotation != "None" and sig.return_annotation is not None:
+            raise TypeError(
+                f"worker context finalizer '{func.__name__}' return "
+                f"annotation must be None, got {sig.return_annotation!r}"
+            )
+
+    # 5. Set marker attribute
+    func._gpmq_ctx_fin = True  # type: ignore[attr-defined]
+
+    # 6. Return the original function unchanged
+    return func
+
+
 def run_forever_method(func: F) -> F:
     """Decorator that validates and marks a function as a run_forever_method.
 

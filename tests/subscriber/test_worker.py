@@ -481,6 +481,114 @@ class TestWorkerContextProcessorDecorator:
         assert result == {"a": 1}
 
 
+class TestWorkerContextFinalizerDecorator:
+    """Tests for the worker_context_finalizer decorator."""
+
+    def test_sets_marker_attribute(self):
+        """Decorated function should have _gpmq_ctx_fin = True."""
+        from gpmq.subscriber.decorators import worker_context_finalizer
+
+        @worker_context_finalizer
+        def my_fin(context: dict[str, Any]) -> None:
+            pass
+
+        assert my_fin._gpmq_ctx_fin is True
+
+    def test_preserves_function_identity(self):
+        """Decorated function should keep its original __name__."""
+        from gpmq.subscriber.decorators import worker_context_finalizer
+
+        @worker_context_finalizer
+        def my_fin(context: dict[str, Any]) -> None:
+            pass
+
+        assert my_fin.__name__ == "my_fin"
+
+    def test_function_still_callable(self):
+        """Decorated function should still be callable and work normally."""
+        from gpmq.subscriber.decorators import worker_context_finalizer
+
+        @worker_context_finalizer
+        def my_fin(context: dict[str, Any]) -> None:
+            context["closed"] = True
+
+        ctx = {"key": "val"}
+        my_fin(ctx)
+        assert ctx == {"key": "val", "closed": True}
+
+    def test_rejects_wrong_param_count(self):
+        """Should raise TypeError for functions with != 1 parameter."""
+        from gpmq.subscriber.decorators import worker_context_finalizer
+
+        with pytest.raises(TypeError, match="parameter"):
+
+            @worker_context_finalizer
+            def no_params() -> None:
+                pass
+
+        with pytest.raises(TypeError, match="parameter"):
+
+            @worker_context_finalizer
+            def two_params(context: dict[str, Any], extra: str) -> None:
+                pass
+
+    def test_rejects_wrong_param_name(self):
+        """Should raise TypeError if parameter is not named 'context'."""
+        from gpmq.subscriber.decorators import worker_context_finalizer
+
+        with pytest.raises(TypeError, match="context"):
+
+            @worker_context_finalizer
+            def my_fin(data: dict[str, Any]) -> None:
+                pass
+
+    def test_rejects_wrong_param_annotation(self):
+        """Should raise TypeError for non-dict[str, Any] parameter annotation."""
+        from gpmq.subscriber.decorators import worker_context_finalizer
+
+        with pytest.raises(TypeError, match="annotation"):
+
+            @worker_context_finalizer
+            def my_fin(context: str) -> None:
+                pass
+
+    def test_rejects_wrong_return_annotation(self):
+        """Should raise TypeError for any non-None return annotation."""
+        from gpmq.subscriber.decorators import worker_context_finalizer
+
+        with pytest.raises(TypeError, match="return"):
+
+            @worker_context_finalizer
+            def my_fin(context: dict[str, Any]) -> str:
+                return "bad"
+
+        with pytest.raises(TypeError, match="return"):
+            # dict[str, Any] return is the processor's contract, not ours
+            @worker_context_finalizer
+            def my_fin_dict(context: dict[str, Any]) -> dict[str, Any]:
+                return context
+
+    def test_accepts_no_annotations(self):
+        """Bare func(context) with no annotations should be accepted."""
+        from gpmq.subscriber.decorators import worker_context_finalizer
+
+        @worker_context_finalizer
+        def my_fin(context):
+            pass
+
+        assert my_fin._gpmq_ctx_fin is True
+
+    def test_accepts_explicit_none_return_annotation(self):
+        """Explicit ``-> None`` return annotation should be accepted."""
+        from gpmq.subscriber.decorators import worker_context_finalizer
+
+        @worker_context_finalizer
+        def my_fin(context: dict[str, Any]) -> None:
+            pass
+
+        assert my_fin._gpmq_ctx_fin is True
+
+
 # --- Helper for TestWorkerContextProcessorLoading ---
 
 
@@ -667,6 +775,204 @@ class TestWorkerContextProcessorLoading:
             worker.prepare_worker_context(
                 {"worker_context_processor": "nonexistent.module.func"}
             )
+
+
+def _make_ctx_fin_module(func, module_name="gpmq_test_ctx_fin_dummy"):
+    """Create a temporary module with a decorated context finalizer function."""
+    mod = types.ModuleType(module_name)
+    mod.my_finalizer = func
+    sys.modules[module_name] = mod
+    return module_name
+
+
+class TestWorkerContextFinalizerLoading:
+    """Tests for loading worker_context_finalizer in prepare_worker_context."""
+
+    def test_loads_decorated_finalizer(self):
+        """Should load a decorated finalizer and assign it to _ctx_fin_func."""
+        from gpmq.subscriber.worker import Worker
+        from gpmq.subscriber.decorators import worker_context_finalizer
+
+        @worker_context_finalizer
+        def my_finalizer(context: dict[str, Any]) -> None:
+            pass
+
+        mod_name = _make_ctx_fin_module(my_finalizer)
+        try:
+            config_dict = _make_subscriber_config()
+            worker = Worker(
+                subscriber_name="test-subscriber",
+                stream_name="gpmq:messages",
+                message_types=["test_type"],
+                worker_id="test-subscriber-worker-0",
+                hostname="test-host",
+                config_dict=config_dict,
+            )
+            worker.prepare_worker_context(
+                {"worker_context_finalizer": f"{mod_name}.my_finalizer"}
+            )
+            assert worker._ctx_fin_func is my_finalizer
+            assert "worker_context_finalizer" not in worker._worker_ctx
+        finally:
+            del sys.modules[mod_name]
+
+    def test_rejects_undecorated_finalizer(self):
+        """Should raise TypeError if function lacks _gpmq_ctx_fin attribute."""
+        from gpmq.subscriber.worker import Worker
+
+        def plain_finalizer(context: dict[str, Any]) -> None:
+            pass
+
+        mod_name = _make_ctx_fin_module(plain_finalizer)
+        try:
+            config_dict = _make_subscriber_config()
+            worker = Worker(
+                subscriber_name="test-subscriber",
+                stream_name="gpmq:messages",
+                message_types=["test_type"],
+                worker_id="test-subscriber-worker-0",
+                hostname="test-host",
+                config_dict=config_dict,
+            )
+            with pytest.raises(TypeError, match="@worker_context_finalizer"):
+                worker.prepare_worker_context(
+                    {"worker_context_finalizer": f"{mod_name}.my_finalizer"}
+                )
+        finally:
+            del sys.modules[mod_name]
+
+    def test_no_finalizer_when_not_in_context(self):
+        """When no worker_context_finalizer in context, _ctx_fin_func stays None."""
+        from gpmq.subscriber.worker import Worker
+
+        config_dict = _make_subscriber_config()
+        worker = Worker(
+            subscriber_name="test-subscriber",
+            stream_name="gpmq:messages",
+            message_types=["test_type"],
+            worker_id="test-subscriber-worker-0",
+            hostname="test-host",
+            config_dict=config_dict,
+        )
+        worker.prepare_worker_context({})
+        assert worker._ctx_fin_func is None
+
+    def test_invalid_import_path_raises_error(self):
+        """Should raise ImportError for invalid import path."""
+        from gpmq.subscriber.worker import Worker
+
+        config_dict = _make_subscriber_config()
+        worker = Worker(
+            subscriber_name="test-subscriber",
+            stream_name="gpmq:messages",
+            message_types=["test_type"],
+            worker_id="test-subscriber-worker-0",
+            hostname="test-host",
+            config_dict=config_dict,
+        )
+        with pytest.raises(ImportError):
+            worker.prepare_worker_context(
+                {"worker_context_finalizer": "nonexistent.module.func"}
+            )
+
+
+class TestWorkerContextFinalizerCleanup:
+    """Tests for the finalizer invocation in _cleanup()."""
+
+    def _make_worker(self):
+        from gpmq.subscriber.worker import Worker
+
+        config_dict = _make_subscriber_config()
+        return Worker(
+            subscriber_name="test-subscriber",
+            stream_name="gpmq:messages",
+            message_types=["test_type"],
+            worker_id="test-subscriber-worker-0",
+            hostname="test-host",
+            config_dict=config_dict,
+        )
+
+    def test_cleanup_calls_finalizer_with_live_worker_ctx(self):
+        """_cleanup() should call the finalizer with the worker's live context."""
+        worker = self._make_worker()
+        received = {}
+        calls = []
+
+        def fin(context):
+            calls.append(context)
+            received.update(context)
+
+        worker._ctx_fin_func = fin
+        worker._redis = MagicMock()
+
+        worker._cleanup()
+
+        assert len(calls) == 1
+        assert calls[0] is worker._worker_ctx
+
+    def test_cleanup_finalizer_runs_before_gpmq_cleanup(self):
+        """Finalizer should run before unregister/publisher/audit/redis teardown."""
+        worker = self._make_worker()
+        order = []
+
+        def fin(context):
+            order.append("finalizer")
+
+        worker._ctx_fin_func = fin
+        mock_redis = MagicMock()
+        mock_redis.unregister_worker.side_effect = lambda *a, **k: order.append(
+            "unregister"
+        )
+        mock_redis.disconnect.side_effect = lambda: order.append("redis_disconnect")
+        mock_pub = MagicMock()
+        mock_pub.close.side_effect = lambda: order.append("publisher_close")
+        mock_audit = MagicMock()
+        mock_audit.close.side_effect = lambda: order.append("audit_close")
+        worker._redis = mock_redis
+        worker._publisher_client = mock_pub
+        worker._audit = mock_audit
+
+        worker._cleanup()
+
+        assert order.index("finalizer") < order.index("unregister")
+        assert order.index("finalizer") < order.index("publisher_close")
+        assert order.index("finalizer") < order.index("audit_close")
+        assert order.index("finalizer") < order.index("redis_disconnect")
+
+    def test_cleanup_finalizer_exception_does_not_block_cleanup(self):
+        """A raising finalizer is logged; gpmq's own cleanup still runs."""
+        worker = self._make_worker()
+        calls = []
+
+        def bad_fin(context):
+            calls.append(context)
+            raise RuntimeError("finalizer boom")
+
+        worker._ctx_fin_func = bad_fin
+        mock_redis = MagicMock()
+        mock_pub = MagicMock()
+        mock_audit = MagicMock()
+        worker._redis = mock_redis
+        worker._publisher_client = mock_pub
+        worker._audit = mock_audit
+
+        worker._cleanup()  # must not raise
+
+        assert len(calls) == 1  # finalizer WAS invoked despite raising
+        mock_redis.unregister_worker.assert_called_once()
+        mock_pub.close.assert_called_once()
+        mock_audit.close.assert_called_once()
+        mock_redis.disconnect.assert_called_once()
+
+    def test_cleanup_without_finalizer_noop(self):
+        """Without a finalizer configured, _cleanup() still works normally."""
+        worker = self._make_worker()
+        mock_redis = MagicMock()
+        worker._redis = mock_redis
+
+        worker._cleanup()
+
+        mock_redis.unregister_worker.assert_called_once()
 
 
 class TestWorkerTargetSubscribersFilter:

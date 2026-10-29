@@ -289,6 +289,23 @@ class TestSubscriberConfig:
         )
         assert config.worker_context_processor == "myapp.processors.init_context"
 
+    def test_worker_context_finalizer_default_none(self):
+        """worker_context_finalizer should default to None."""
+        config = SubscriberConfig(
+            name="test",
+            handlers=[HandlerConfig(message_types=["test"], handler="mod.func")],
+        )
+        assert config.worker_context_finalizer is None
+
+    def test_worker_context_finalizer_accepts_path(self):
+        """worker_context_finalizer should accept an import path string."""
+        config = SubscriberConfig(
+            name="test",
+            handlers=[HandlerConfig(message_types=["test"], handler="mod.func")],
+            worker_context_finalizer="myapp.processors.close_context",
+        )
+        assert config.worker_context_finalizer == "myapp.processors.close_context"
+
     def test_worker_context_default_none(self):
         """worker_context should default to None."""
         config = SubscriberConfig(
@@ -541,6 +558,38 @@ class TestGetSubscriber:
         sub = get_subscriber("gpmq.subscribers.notifier")
         assert "worker_context_processor" not in sub._worker_ctx
 
+    def test_worker_context_finalizer_passes_to_worker_context(self):
+        """When worker_context_finalizer is set, it should be in worker context."""
+        from gpmq.config import GPMQConfig, SubscriberConfig, get_subscriber
+
+        common = GPMQConfig(redis_host="127.0.0.1")
+        specific = SubscriberConfig(
+            name="notifier",
+            handlers=[HandlerConfig(message_types=["test"], handler="mod.func")],
+            worker_context_finalizer="myapp.processors.close_context",
+        )
+        self._setup_mock_mgr(common, specific)
+
+        sub = get_subscriber("gpmq.subscribers.notifier")
+        assert (
+            sub._worker_ctx.get("worker_context_finalizer")
+            == "myapp.processors.close_context"
+        )
+
+    def test_no_worker_context_finalizer_no_key_in_context(self):
+        """When worker_context_finalizer is not set, no key in worker context."""
+        from gpmq.config import GPMQConfig, SubscriberConfig, get_subscriber
+
+        common = GPMQConfig(redis_host="127.0.0.1")
+        specific = SubscriberConfig(
+            name="notifier",
+            handlers=[HandlerConfig(message_types=["test"], handler="mod.func")],
+        )
+        self._setup_mock_mgr(common, specific)
+
+        sub = get_subscriber("gpmq.subscribers.notifier")
+        assert "worker_context_finalizer" not in sub._worker_ctx
+
     def test_worker_context_applied_to_subscriber(self):
         """When worker_context is set in config, it should be applied to subscriber."""
         from gpmq.config import GPMQConfig, SubscriberConfig, get_subscriber
@@ -762,17 +811,15 @@ class TestDottedDefaultCfgPath:
         (gpmq_dir / "publisher").mkdir(parents=True)
         (tmp_path / "global_env.yaml").write_text("debug: true\n", encoding="utf-8")
         (gpmq_dir / "common.yaml").write_text(
-            "cfg_class_name: GPMQConfig\n"
-            "redis_host: 127.0.0.1\n"
-            "enable_audit: false\n",
+            "cfg_class_name: GPMQConfig\nredis_host: 127.0.0.1\nenable_audit: false\n",
             encoding="utf-8",
         )
         (gpmq_dir / "subscribers" / "notifier.yaml").write_text(
             "cfg_class_name: SubscriberConfig\n"
             "name: notifier\n"
             "handlers:\n"
-            "  - message_types: [\"demo_type\"]\n"
-            "    handler: \"gpmq.subscriber.examples.on_msg_pingpong\"\n",
+            '  - message_types: ["demo_type"]\n'
+            '    handler: "gpmq.subscriber.examples.on_msg_pingpong"\n',
             encoding="utf-8",
         )
         (gpmq_dir / "publisher" / "main.yaml").write_text(

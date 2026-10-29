@@ -370,3 +370,113 @@ class TestWorkerHeartbeatStatusFlush:
         finally:
             redis_adapter.unregister_worker(group_name, worker_id)
             HandlerRegistry.clear()
+
+
+class TestWorkerContextFinalizerE2E:
+    """Integration: a spawned worker process runs the context finalizer on
+    graceful stop (real spawn, real Redis, full run() -> finally -> _cleanup()
+    chain — unlike the unit tests, which call _cleanup() directly)."""
+
+    def test_spawned_worker_runs_finalizer_on_graceful_stop(
+        self, redis_adapter: RedisAdapter, tmp_path
+    ):
+        """stop_event -> read-loop exit -> finally _cleanup() -> finalizer
+        called with the live worker context in the child process."""
+        from gpmq.process import use_spawn
+
+        # Production semantics: fresh interpreter per worker (no-op on
+        # Windows, where spawn is already the default).
+        use_spawn()
+
+        group_name = "integ-fin-sub"
+        stream_name = "gpmq:messages"
+        worker_id = f"{group_name}-test-host-worker-0"
+        marker_path = tmp_path / "finalizer_marker.json"
+
+        config_dict = {
+            "name": group_name,
+            "handlers": [
+                {
+                    "message_types": ["type_a"],
+                    # Must be a REAL importable handler: run() loads it via
+                    # importlib in the child process (the "dummy.handler"
+                    # placeholder used by unit configs would not import).
+                    "handler": "gpmq.subscriber.examples.on_msg_example_type_a",
+                }
+            ],
+            "stream_name": stream_name,
+            "redis_host": "127.0.0.1",
+            "redis_port": 6379,
+            "redis_password": "123456",
+            "redis_db": 15,
+            "heartbeat_interval": 300,
+            "enable_audit": False,
+            "log_category": "gpmq",
+        }
+
+        worker = Worker(
+            subscriber_name=group_name,
+            stream_name=stream_name,
+            message_types=["type_a"],
+            worker_id=worker_id,
+            hostname="test-host",
+            config_dict=config_dict,
+            context={
+                "worker_context_finalizer": (
+                    "tests.subscriber.finalizer_helper.record_finalizer_call"
+                ),
+                "finalizer_marker_path": str(marker_path),
+            },
+        )
+
+        try:
+            # Workers do not create the consumer group (the Subscriber does
+            # in production); XREADGROUP would spin on NOGROUP without it.
+            redis_adapter.xgroup_create(stream_name, group_name)
+
+            worker.start()
+
+            # Wait until the child process has booted, connected, and
+            # registered itself (proves run() passed prepare_worker_context).
+            deadline = time.monotonic() + 30
+            registered = False
+            while time.monotonic() < deadline:
+                if not worker.is_alive():
+                    break
+                info = {
+                    w["worker_id"]
+                    for w in redis_adapter.get_consumer_group_workers(group_name)
+                }
+                if worker_id in info:
+                    registered = True
+                    break
+                time.sleep(0.2)
+            assert registered, (
+                f"worker never registered itself in Redis (exitcode={worker.exitcode})"
+            )
+
+            # Graceful stop: read loop notices the event within one 5s
+            # XREADGROUP block, then run()'s finally calls _cleanup().
+            worker._stop_event.set()
+            worker.join(timeout=30)
+
+            assert not worker.is_alive()
+            assert worker.exitcode == 0, "worker must exit cleanly, not terminated"
+
+            # The finalizer ran in the CHILD process and wrote the marker
+            # from live-context data.
+            assert marker_path.exists(), (
+                "finalizer marker not written — finalizer never ran"
+            )
+            payload = json.loads(marker_path.read_text(encoding="utf-8"))
+            assert payload["worker_id"] == worker_id
+            assert payload["subscriber_name"] == group_name
+        finally:
+            if worker.is_alive():
+                worker._stop_event.set()
+                worker.join(timeout=10)
+            try:
+                redis_adapter.clear_stream(stream_name)
+                redis_adapter.xgroup_destroy(stream_name, group_name)
+            except Exception:
+                pass

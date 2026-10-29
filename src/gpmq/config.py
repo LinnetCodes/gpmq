@@ -212,6 +212,8 @@ class SubscriberConfig(GPMQConfig):
         subscriber_timeout: Timeout for individual subscriber in seconds
         embedded_publisher: publisher config path for an embedded publisher in a subscriber that do message relay
         worker_context_processor: Import path to a worker context processor function
+        worker_context_finalizer: Import path to a worker context finalizer function
+            (worker stop-side counterpart of worker_context_processor)
         worker_context: Custom worker context data dict
         run_forever_method: Import path to a run_forever_method decorated function
         run_forever_method_paras: Custom parameters dict passed to run_forever_method function's paras argument
@@ -239,6 +241,11 @@ class SubscriberConfig(GPMQConfig):
     )
     worker_context_processor: str | None = Field(
         default=None, description="Import path to a worker context processor function"
+    )
+    worker_context_finalizer: str | None = Field(
+        default=None,
+        description="Import path to a worker context finalizer function "
+        "(called when the worker stops gracefully)",
     )
     worker_context: Optional[dict[str, Any]] = Field(
         default=None, description="Custom worker context data dict"
@@ -358,6 +365,11 @@ def get_subscriber(cfg_path: str) -> "Subscriber":
     if config.worker_context_processor:
         subscriber.apply_worker_context(
             worker_context_processor=config.worker_context_processor
+        )
+
+    if config.worker_context_finalizer:
+        subscriber.apply_worker_context(
+            worker_context_finalizer=config.worker_context_finalizer
         )
 
     if config.worker_context:

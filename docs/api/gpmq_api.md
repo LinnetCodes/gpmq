@@ -20,6 +20,7 @@ Configuration and lifecycle management functions, plus the core classes for publ
 - [Decorators](#decorators)
   - [message_handler](#message_handler)
   - [worker_context_processor](#worker_context_processor)
+  - [worker_context_finalizer](#worker_context_finalizer)
   - [run_forever_method](#run_forever_method)
 - [Data Models](#data-models)
   - [Message](#message)
@@ -708,6 +709,37 @@ Decorator that marks a function as a worker context initializer. Called once per
 | `config_manager` | `GPConfigManager` | Config manager (if initialized) |
 | `logger` | `GPCLogger` | Logger for this worker |
 | `publisher` | `GPMQClient` | Embedded publisher (if configured) |
+
+---
+
+### `worker_context_finalizer`
+
+```python
+@worker_context_finalizer
+def close_context(context: dict[str, Any]) -> None:
+    context["terminal"].close()
+```
+
+Decorator that marks a function as a worker context finalizer — the stop-side counterpart of `worker_context_processor`. Called once per worker process when it stops gracefully, so user-built resources (database clients, terminal sessions, file handles...) injected via the processor can be closed within the gpmq lifecycle instead of relying on `atexit`.
+
+**When it runs**
+- Every graceful exit path: normal read-loop exit, `KeyboardInterrupt`, `SystemExit`, and crash teardown.
+- It runs **before** gpmq closes its own resources, so context entries like `logger` and the embedded `publisher` are still usable (a final notification can be published).
+- It does **not** run on a hard terminate (`Process.terminate()` after join timeout) — no code runs there at all.
+- An exception raised by the finalizer is logged and the remaining cleanup continues.
+
+**Requirements**
+- Must accept exactly one parameter named `context`.
+- Return annotation if present must be `None` — the finalizer is a terminal consumer of the context.
+- Configured in subscriber YAML via `worker_context_finalizer: "myapp.module.func"`, independently of `worker_context_processor` (each is optional on its own).
+
+**Configuration**
+
+```yaml
+# subscribers/data_loader.yaml
+worker_context_processor: "myapp.wiring.build_context"
+worker_context_finalizer: "myapp.wiring.close_context"
+```
 
 ---
 

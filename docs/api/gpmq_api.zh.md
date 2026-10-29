@@ -20,6 +20,7 @@
 - [装饰器](#装饰器)
   - [message_handler](#message_handler)
   - [worker_context_processor](#worker_context_processor)
+  - [worker_context_finalizer](#worker_context_finalizer)
   - [run_forever_method](#run_forever_method)
 - [数据模型](#数据模型)
   - [Message](#message)
@@ -708,6 +709,37 @@ def init_context(context: dict[str, Any]) -> dict[str, Any]:
 | `config_manager` | `GPConfigManager` | 配置管理器实例（如已初始化） |
 | `logger` | `GPCLogger` | 该 Worker 的日志实例 |
 | `publisher` | `GPMQClient` | 内嵌发布者客户端（如已配置） |
+
+---
+
+### `worker_context_finalizer`
+
+```python
+@worker_context_finalizer
+def close_context(context: dict[str, Any]) -> None:
+    context["terminal"].close()
+```
+
+将函数标记为 Worker 上下文终结器——`worker_context_processor` 的停止侧对位。每个 Worker 进程优雅停止时调用一次，使经 processor 注入的自建资源（数据库客户端、终端会话、文件句柄……）能在 gpmq 生命周期内收尾，而无需依赖 `atexit`。
+
+**调用时机**
+- 覆盖全部优雅退出路径：正常读循环退出、`KeyboardInterrupt`、`SystemExit`、崩溃 teardown。
+- 在 gpmq 关闭自建资源**之前**运行，此时 `logger`、内嵌 `publisher` 等上下文项仍可用（可发布最后通知）。
+- 硬 terminate（join 超时后的 `Process.terminate()`）时**不会**运行——硬杀下没有任何代码会执行。
+- 终结器抛出的异常会被记录，其余清理步骤继续执行。
+
+**要求**
+- 必须接受且仅接受一个名为 `context` 的参数。
+- 返回值注解（如有）必须为 `None`——终结器是上下文的终点消费者。
+- 在订阅者 YAML 中通过 `worker_context_finalizer: "myapp.module.func"` 配置，与 `worker_context_processor` 相互独立（各自均可单独配置）。
+
+**配置**
+
+```yaml
+# subscribers/data_loader.yaml
+worker_context_processor: "myapp.wiring.build_context"
+worker_context_finalizer: "myapp.wiring.close_context"
+```
 
 ---
 
