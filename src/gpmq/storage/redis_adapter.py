@@ -11,6 +11,12 @@ from gpmq.exceptions import RedisConnectionError
 
 T = TypeVar("T")
 
+# Max seconds to wait for the server's SUBSCRIBE confirmations inside
+# RedisAdapter.subscribe(). redis-py's subscribe() only SENDS the command;
+# the acks must be read back before the subscription is guaranteed
+# effective (publish_message() depends on that ordering — see I14).
+_SUBSCRIBE_ACK_TIMEOUT_SECONDS: float = 5.0
+
 
 class RedisAdapter:
     """Redis adapter with retry logic for GPMQ operations.
@@ -485,16 +491,23 @@ class RedisAdapter:
         self._retry_on_transient_errors(_publish)
 
     def subscribe(self, channels: list[str]) -> "redis.client.PubSub":
-        """Create PubSub subscription.
+        """Create PubSub subscription confirmed effective before returning.
+
+        Sends SUBSCRIBE, then reads back the server's confirmation for every
+        channel. redis-py's ``PubSub.subscribe()`` only sends the command
+        (the acks are normally consumed later by ``get_message``), so without
+        this round trip a caller could proceed — e.g. xadd — while the
+        subscription is not yet visible to the server.
 
         Args:
             channels: List of channel names to subscribe to
 
         Returns:
-            redis.client.PubSub object
+            redis.client.PubSub object with all channels confirmed
 
         Raises:
-            RedisConnectionError: On connection failure after retries
+            RedisConnectionError: If no confirmation arrives within
+                ``_SUBSCRIBE_ACK_TIMEOUT_SECONDS`` (after retries)
         """
 
         def _subscribe() -> "redis.client.PubSub":
@@ -502,6 +515,18 @@ class RedisAdapter:
             # Redis.pubsub() is unannotated in redis-py 8.
             pubsub: "redis.client.PubSub" = client.pubsub()  # type: ignore[no-untyped-call]
             pubsub.subscribe(*channels)
+            pending_acks = len(channels)
+            deadline = time.monotonic() + _SUBSCRIBE_ACK_TIMEOUT_SECONDS
+            while pending_acks > 0:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise redis.TimeoutError(
+                        f"no SUBSCRIBE confirmation for {pending_acks} "
+                        f"channel(s) within {_SUBSCRIBE_ACK_TIMEOUT_SECONDS}s"
+                    )
+                msg = pubsub.get_message(timeout=min(remaining, 0.1))
+                if msg is not None and msg.get("type") == "subscribe":
+                    pending_acks -= 1
             return pubsub
 
         return self._retry_on_transient_errors(_subscribe)

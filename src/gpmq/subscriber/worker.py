@@ -366,8 +366,11 @@ class Worker(Process):
         fields, etc.). Builds a poison-message and an EXCEPTION result using
         ONLY the trusted ``msg_id`` and worker self-attributes (never the
         untrusted ``fields`` as a parsed object), attempts a single ACK, and
-        publishes the result. Every step is wrapped so this method cannot
-        itself raise.
+        publishes the result when the broken envelope still carries a usable
+        ``reply_token`` (a plain string field readable even when the rest of
+        the envelope does not parse — the caller then receives the EXCEPTION
+        instead of hanging until TIMEOUT). Every step is wrapped so this
+        method cannot itself raise.
 
         Args:
             msg_id: Trusted Redis stream ID of the broken message.
@@ -427,7 +430,11 @@ class Worker(Process):
                 )
                 return
 
-            self._publish_result(msg_id, process_result)
+            # Best-effort routing: only a plain non-empty string token is
+            # trusted from the broken envelope; anything else is unroutable.
+            raw_token = fields.get("reply_token")
+            token = raw_token if isinstance(raw_token, str) and raw_token else None
+            self._publish_result(token, process_result)
         except Exception:
             # Last-resort guard: poison handling must never crash the worker.
             logger.error(
@@ -452,7 +459,9 @@ class Worker(Process):
         4. Build a :class:`ProcessResult` (SUCCESS / FAILURE / EXCEPTION).
         5. ``save_result`` to AuditStore.
         6. ``xack`` the message on the stream.
-        7. ``publish`` the result on ``gpmq:result:{msg_id}:{subscriber_name}``.
+        7. ``publish`` the result on ``{prefix}result:{reply_token}:{subscriber_name}`` —
+           skipped when the envelope carries no ``reply_token`` (fire-and-forget
+           path: nobody is listening, so publishing would be a dead round trip).
         """
         # --- 1. Parse message (poison-safe: any failure -> _handle_poison_message) ---
         try:
@@ -473,6 +482,7 @@ class Worker(Process):
                     "publisher": fields.get("publisher", ""),
                     "payload": payload,
                     "correlation_id": fields.get("correlation_id", None),
+                    "reply_token": fields.get("reply_token", None),
                     "target_subscribers": target_list,
                 }
             )
@@ -541,7 +551,7 @@ class Worker(Process):
             if self._audit:
                 self._audit.save_result(msg_id, process_result)
             self._redis.xack(self._stream_name, self._subscriber_name, msg_id)
-            self._publish_result(msg_id, process_result)
+            self._publish_result(message.reply_token, process_result)
             logger.error(
                 f"worker '{self._worker_id}' raised an exception when handling message: {msg_id}, "
                 f"type: '{message.type}', from '{message.publisher}', payload: '{message.payload}'"
@@ -600,15 +610,27 @@ class Worker(Process):
         self._redis.xack(self._stream_name, self._subscriber_name, msg_id)
 
         # --- 7. Publish result ---
-        self._publish_result(msg_id, process_result)
+        self._publish_result(message.reply_token, process_result)
 
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
 
-    def _publish_result(self, msg_id: str, result: ProcessResult) -> None:
-        """Publish processing result to the Pub/Sub channel."""
-        channel = f"{self._key_prefix}result:{msg_id}:{self._subscriber_name}"
+    def _publish_result(self, reply_token: str | None, result: ProcessResult) -> None:
+        """Publish processing result to the reply channel.
+
+        The channel is keyed by the caller-generated ``reply_token`` carried
+        in the message envelope (the caller subscribed before the xadd).
+        Messages without a token — the fire-and-forget ``send`` path — are
+        not published at all: nobody is listening on the other end.
+
+        Args:
+            reply_token: Routing token from the message envelope, if any.
+            result: The processing result to publish.
+        """
+        if not reply_token:
+            return
+        channel = f"{self._key_prefix}result:{reply_token}:{self._subscriber_name}"
         self._redis.publish(channel, result.model_dump())
 
     def _register_self(self) -> None:

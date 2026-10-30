@@ -457,3 +457,59 @@ def test_idle_xreadgroup_returns_at_block_cadence(redis_adapter):
         assert 4.5 <= elapsed < 9.0
     finally:
         redis_adapter.clear_stream(stream)
+
+
+class TestSubscribeAckConfirmation:
+    """subscribe() must read back the server's SUBSCRIBE confirmations (I14).
+
+    redis-py's ``PubSub.subscribe()`` only sends the command; without reading
+    the acks, a subscription is not guaranteed effective when the caller
+    proceeds — the exact race that lost fast-worker results.
+    """
+
+    @staticmethod
+    def _make_adapter(redis_max_retries: int = 0):
+        from unittest.mock import MagicMock
+
+        from gpmq.config import GPMQConfig
+        from gpmq.storage.redis_adapter import RedisAdapter
+
+        config = GPMQConfig(
+            redis_max_retries=redis_max_retries,
+            redis_retry_delay=0.1,
+        )
+        adapter = RedisAdapter(config)
+        pubsub = MagicMock()
+        client = MagicMock()
+        client.pubsub.return_value = pubsub
+        adapter._client = client
+        return adapter, pubsub
+
+    def test_reads_one_ack_per_channel_before_returning(self):
+        """All SUBSCRIBE acks must be consumed before subscribe() returns."""
+        adapter, pubsub = self._make_adapter()
+        pubsub.get_message.side_effect = [
+            {"type": "subscribe", "channel": "ch-a", "data": 1},
+            {"type": "subscribe", "channel": "ch-b", "data": 2},
+        ]
+
+        result = adapter.subscribe(["ch-a", "ch-b"])
+
+        assert result is pubsub
+        pubsub.subscribe.assert_called_once_with("ch-a", "ch-b")
+        assert pubsub.get_message.call_count == 2
+
+    def test_raises_connection_error_when_ack_never_arrives(self):
+        """A subscription never confirmed by the server must fail, not proceed."""
+        from unittest.mock import patch
+
+        from gpmq.exceptions import RedisConnectionError
+
+        adapter, pubsub = self._make_adapter()
+        pubsub.get_message.return_value = None
+
+        with patch(
+            "gpmq.storage.redis_adapter._SUBSCRIBE_ACK_TIMEOUT_SECONDS", 0.05
+        ):
+            with pytest.raises(RedisConnectionError):
+                adapter.subscribe(["ch-a"])

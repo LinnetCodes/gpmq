@@ -1,12 +1,12 @@
 """Message publisher for GPMQ."""
 
 import json
+import uuid
 from typing import Optional
 
 from gpmq.config import GPMQConfig
 from gpmq.exceptions import InvalidTargetSubscriberError
 from gpmq.models.message import Message
-from gpmq.models.result import ProcessResult
 from gpmq.publisher.result_handler import ResultHandler
 from gpmq.storage.audit_store import AuditStore
 from gpmq.storage.redis_adapter import RedisAdapter
@@ -20,10 +20,14 @@ class Publisher:
 
     Publish flow:
     1. Get active subscribers matching message type
-    2. xadd to stream -> get message_id
-    3. Subscribe to result channels
-    4. Save message to audit store
-    5. Return (message_id, ResultHandler)
+    2. Generate a reply token and subscribe to the token's result
+       channels — the subscription is confirmed by Redis BEFORE the
+       message becomes visible to workers, so no result can be lost
+       to the subscribe/publish race
+    3. xadd to stream (envelope carries the reply token) -> get message_id
+    4. Bind the message_id into the ResultHandler
+    5. Save message to audit store
+    6. Return (message_id, ResultHandler)
     """
 
     def __init__(
@@ -46,6 +50,10 @@ class Publisher:
     def publish_message(self, message: Message) -> tuple[str, ResultHandler]:
         """Publish message to Redis Stream.
 
+        The result subscription (keyed by a caller-side ``reply_token``)
+        is opened and confirmed BEFORE the xadd, so a worker can never
+        publish a result to a channel nobody is listening on.
+
         Args:
             message: Message to publish (id field will be updated with Redis ID)
 
@@ -60,21 +68,28 @@ class Publisher:
         else:
             relevant_subs = self._get_matching_subscribers(message.type)
 
+        # Subscribe to the result channels BEFORE the message exists for
+        # workers: the token is generated here and travels in the envelope,
+        # so the channel identity is known ahead of the xadd.
+        reply_token = uuid.uuid4().hex
+        handler = ResultHandler(
+            reply_token=reply_token,
+            subscriber_names=relevant_subs,
+            redis_adapter=self._redis,
+            key_prefix=self._config.registry_key_prefix,
+            audit_store=self._audit,
+        )
+
         # Publish to stream
+        message.reply_token = reply_token
         fields = self._message_to_fields(message)
         message_id = self._redis.xadd(self._config.stream_name, fields)
 
         # Update message with actual Redis-generated ID
         message.id = message_id
 
-        # Create ResultHandler (subscribes to result channels immediately)
-        handler = ResultHandler(
-            message_id=message_id,
-            subscriber_names=relevant_subs,
-            redis_adapter=self._redis,
-            key_prefix=self._config.registry_key_prefix,
-            audit_store=self._audit,
-        )
+        # ResultHandler needs the message_id for audit and TIMEOUT results
+        handler.bind(message_id)
 
         # Save to audit store
         if self._audit:
@@ -118,31 +133,6 @@ class Publisher:
         """
         timeout = self._config.heartbeat_interval * 3
         return self._redis.get_active_subscribers(timeout=timeout)
-
-    def wait_for_results(
-        self,
-        message_id: str,
-        subscriber_names: list[str],
-        timeout: Optional[float] = None,
-    ) -> dict[str, ProcessResult]:
-        """Convenience method: create handler and wait for results.
-
-        Args:
-            message_id: Message ID to wait for
-            subscriber_names: Expected subscriber names
-            timeout: Max seconds to wait
-
-        Returns:
-            Dict mapping subscriber_name to ProcessResult
-        """
-        handler = ResultHandler(
-            message_id=message_id,
-            subscriber_names=subscriber_names,
-            redis_adapter=self._redis,
-            key_prefix=self._config.registry_key_prefix,
-            audit_store=self._audit,
-        )
-        return handler.wait(timeout=timeout)
 
     def _get_matching_subscribers(self, message_type: str) -> list[str]:
         """Get subscribers that handle a specific message type.
@@ -205,6 +195,8 @@ class Publisher:
         }
         if message.correlation_id:
             fields["correlation_id"] = message.correlation_id
+        if message.reply_token:
+            fields["reply_token"] = message.reply_token
         if message.target_subscribers is not None:
             fields["target_subscribers"] = json.dumps(message.target_subscribers)
         return fields

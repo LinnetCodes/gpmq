@@ -47,14 +47,22 @@ def _make_stream_message(
     msg_id: str = "1680000000000-0",
     msg_type: str = "test_type",
     payload: dict | None = None,
+    reply_token: str | None = "tok-1",
 ) -> tuple[str, dict[str, str]]:
-    """Create a raw Redis Stream message tuple."""
+    """Create a raw Redis Stream message tuple.
+
+    By default the envelope carries a reply_token, mirroring what
+    ``Publisher.publish_message`` writes (the collect-results path);
+    pass ``reply_token=None`` to simulate the fire-and-forget send path.
+    """
     fields = {
         "type": msg_type,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "publisher": "test-pub",
         "payload": json.dumps(payload or {"key": "val"}),
     }
+    if reply_token is not None:
+        fields["reply_token"] = reply_token
     return (msg_id, fields)
 
 
@@ -106,7 +114,47 @@ class TestWorkerProcessMessage:
         )
         mock_redis.publish.assert_called_once()
         publish_channel = mock_redis.publish.call_args[0][0]
-        assert "gpmq:result:msg-1:test-subscriber" == publish_channel
+        assert "gpmq:result:tok-1:test-subscriber" == publish_channel
+
+    def test_no_reply_token_skips_result_publish(self):
+        """Fire-and-forget envelope (no reply_token): process + ACK, skip publish.
+
+        The send/NOTIFY path carries no reply_token; publishing a result
+        to a channel nobody subscribed to would be a wasted round trip.
+        """
+        from gpmq.config import SubscriberConfig
+        from gpmq.subscriber.worker import Worker
+
+        config_dict = _make_subscriber_config(message_types=["order_created"])
+        config = SubscriberConfig(**config_dict)
+
+        mock_redis = MagicMock()
+        mock_audit = MagicMock()
+        mock_handler = MagicMock(return_value=None)
+
+        worker = Worker(
+            subscriber_name="test-subscriber",
+            stream_name="gpmq:messages",
+            message_types=["order_created"],
+            worker_id="test-subscriber-worker-0",
+            hostname="test-host",
+            config_dict=config.model_dump(),
+        )
+        worker._redis = mock_redis
+        worker._audit = mock_audit
+
+        msg_id, fields = _make_stream_message(
+            msg_id="msg-nt", msg_type="order_created", reply_token=None
+        )
+
+        worker._process_message(msg_id, fields, mock_handler)
+
+        mock_handler.assert_called_once()
+        mock_redis.xack.assert_called_once_with(
+            "gpmq:messages", "test-subscriber", "msg-nt"
+        )
+        mock_audit.save_result.assert_called_once()
+        mock_redis.publish.assert_not_called()
 
     def test_handler_exception_creates_exception_result(self):
         """Should catch handler exceptions, create EXCEPTION result, and still ACK."""
@@ -1093,9 +1141,8 @@ class TestWorkerPoisonMessage:
         worker._redis.xack.assert_called_once_with(
             "gpmq:messages", "test-subscriber", "bad-1"
         )
-        worker._redis.publish.assert_called_once()
-        result = worker._redis.publish.call_args[0][1]
-        assert result["status"] == "exception"
+        # No reply_token in the broken envelope -> result cannot be routed
+        worker._redis.publish.assert_not_called()
         worker._audit.save_message.assert_called_once()
         poison = worker._audit.save_message.call_args[0][0]
         assert poison.id == "bad-1"
@@ -1103,6 +1150,30 @@ class TestWorkerPoisonMessage:
         assert poison.payload == {
             "broken_msg": json.dumps(fields, ensure_ascii=False, default=str)
         }
+
+    def test_poison_with_reply_token_publishes_exception(self):
+        """Poison envelope carrying a usable reply_token still routes the EXCEPTION.
+
+        Best-effort: the token is a plain string field, readable even when
+        the rest of the envelope fails to parse — the caller then gets the
+        EXCEPTION result instead of hanging until TIMEOUT.
+        """
+        worker = self._make_worker()
+        handler = MagicMock()
+        fields = {
+            "type": "order_created",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "publisher": "pub",
+            "payload": "this is not json {{{",
+            "reply_token": "tok-poison",
+        }
+        worker._process_message("bad-token-1", fields, handler)  # must not raise
+
+        worker._redis.publish.assert_called_once()
+        channel = worker._redis.publish.call_args[0][0]
+        assert channel == "gpmq:result:tok-poison:test-subscriber"
+        payload = worker._redis.publish.call_args[0][1]
+        assert payload["status"] == "exception"
 
     def test_invalid_target_subscribers_json_does_not_crash(self):
         """target_subscribers non-JSON -> poison handling, no crash."""
@@ -1120,7 +1191,8 @@ class TestWorkerPoisonMessage:
         worker._redis.xack.assert_called_once_with(
             "gpmq:messages", "test-subscriber", "bad-2"
         )
-        worker._redis.publish.assert_called_once()
+        # Broken envelope carries no usable reply_token -> no result publish
+        worker._redis.publish.assert_not_called()
 
     def test_invalid_timestamp_does_not_crash(self):
         """Invalid timestamp -> Message construction fails -> poison handling."""
@@ -1165,8 +1237,9 @@ class TestWorkerPoisonMessage:
         # publish NOT called because ACK failed and we returned early
         worker._redis.publish.assert_not_called()
 
-    def test_no_audit_still_publishes_exception(self):
-        """When audit is disabled, poison branch still publishes EXCEPTION + ACKs."""
+    def test_no_audit_still_acks_and_skips_publish(self):
+        """When audit is disabled, poison branch still ACKs; publish is skipped
+        (no reply_token in the envelope to route the EXCEPTION result)."""
         worker = self._make_worker()
         worker._audit = None
         handler = MagicMock()
@@ -1178,7 +1251,7 @@ class TestWorkerPoisonMessage:
         }
         worker._process_message("bad-6", fields, handler)
         worker._redis.xack.assert_called_once()
-        worker._redis.publish.assert_called_once()
+        worker._redis.publish.assert_not_called()
 
     def test_continues_consuming_after_poison_message(self):
         """After handling one poison message, the worker must still process the next valid one.
@@ -1217,8 +1290,8 @@ class TestWorkerPoisonMessage:
         valid_handler.assert_called_once()
         # The poison message was ACKed, and the valid message was ACKed too.
         assert worker._redis.xack.call_count == 2
-        # Two publishes: one EXCEPTION (poison) + one SUCCESS (valid).
-        assert worker._redis.publish.call_count == 2
+        # One publish: only the valid message (poison envelope had no reply_token).
+        assert worker._redis.publish.call_count == 1
 
 
 class TestWorkerReadBatch:
@@ -1308,8 +1381,8 @@ class TestWorkerReadBatch:
             assert worker._redis.xack.call_count == 2
             # The valid message was processed; the malformed one was NOT.
             mock_handler.assert_called_once()
-            # Poison handling published an EXCEPTION result.
-            assert worker._redis.publish.call_count == 2
+            # Only the valid message publishes (poison had no reply_token).
+            assert worker._redis.publish.call_count == 1
         finally:
             HandlerRegistry.clear()
 

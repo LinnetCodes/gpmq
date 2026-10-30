@@ -2,6 +2,7 @@
 
 from unittest.mock import MagicMock, patch
 
+import pytest
 
 from gpmq.models.result import ProcessResult, ProcessStatus
 from gpmq.publisher.result_handler import ResultHandler
@@ -19,37 +20,79 @@ def _make_result(
     ).model_dump()
 
 
+def _bound_handler(
+    subscriber_names: list[str],
+    redis: MagicMock,
+    key_prefix: str = "gpmq:",
+    reply_token: str = "tok-1",
+    message_id: str = "msg-1",
+) -> ResultHandler:
+    """Construct a handler and bind its message ID, as Publisher.publish_message does."""
+    handler = ResultHandler(reply_token, subscriber_names, redis, key_prefix=key_prefix)
+    handler.bind(message_id)
+    return handler
+
+
 class TestResultHandlerInit:
     """Tests for ResultHandler constructor."""
 
-    def test_subscribes_to_result_channels(self):
-        """Should subscribe to gpmq:result:{msg_id}:{sub} for each subscriber."""
+    def test_subscribes_to_reply_token_channels(self):
+        """Should subscribe to gpmq:result:{reply_token}:{sub} for each subscriber."""
         redis = MagicMock()
-        ResultHandler("msg-1", ["sub-a", "sub-b"], redis, key_prefix="gpmq:")
+        ResultHandler("tok-1", ["sub-a", "sub-b"], redis, key_prefix="gpmq:")
 
         redis.subscribe.assert_called_once()
         channels = redis.subscribe.call_args[0][0]
-        assert "gpmq:result:msg-1:sub-a" in channels
-        assert "gpmq:result:msg-1:sub-b" in channels
+        assert "gpmq:result:tok-1:sub-a" in channels
+        assert "gpmq:result:tok-1:sub-b" in channels
 
     def test_no_subscribers_does_not_subscribe(self):
         """Should not subscribe when subscriber list is empty."""
         redis = MagicMock()
-        ResultHandler("msg-1", [], redis, key_prefix="gpmq:")
+        ResultHandler("tok-1", [], redis, key_prefix="gpmq:")
         redis.subscribe.assert_not_called()
 
     def test_custom_key_prefix(self):
         """Should use custom key prefix for channel names."""
         redis = MagicMock()
-        ResultHandler("msg-1", ["sub-a"], redis, key_prefix="custom:")
+        ResultHandler("tok-1", ["sub-a"], redis, key_prefix="custom:")
         channels = redis.subscribe.call_args[0][0]
-        assert "custom:result:msg-1:sub-a" in channels
+        assert "custom:result:tok-1:sub-a" in channels
 
-    def test_message_id_property(self):
-        """Should expose message_id as property."""
+    def test_message_id_none_before_bind(self):
+        """message_id must be unavailable until the publisher binds it."""
         redis = MagicMock()
-        handler = ResultHandler("msg-1", [], redis, key_prefix="gpmq:")
-        assert handler.message_id == "msg-1"
+        handler = ResultHandler("tok-1", [], redis, key_prefix="gpmq:")
+        assert handler.message_id is None
+
+
+class TestResultHandlerBind:
+    """Tests for bind() — the post-xadd message ID backfill."""
+
+    def test_bind_sets_message_id(self):
+        """bind() should expose the redis-generated message ID."""
+        redis = MagicMock()
+        handler = ResultHandler("tok-1", ["sub-a"], redis, key_prefix="gpmq:")
+        handler.bind("1234567890-0")
+        assert handler.message_id == "1234567890-0"
+
+    def test_wait_requires_bound_message_id(self):
+        """wait() must not run with an unbound handler (internal invariant)."""
+        redis = MagicMock()
+        redis.get_message.return_value = None
+        handler = ResultHandler("tok-1", ["sub-a"], redis, key_prefix="gpmq:")
+
+        with pytest.raises(AssertionError):
+            handler.wait(timeout=0.01)
+
+    def test_wait_any_requires_bound_message_id(self):
+        """wait_any() must not run with an unbound handler (internal invariant)."""
+        redis = MagicMock()
+        redis.get_message.return_value = None
+        handler = ResultHandler("tok-1", ["sub-a"], redis, key_prefix="gpmq:")
+
+        with pytest.raises(AssertionError):
+            handler.wait_any(timeout=0.01)
 
 
 class TestResultHandlerWait:
@@ -64,7 +107,7 @@ class TestResultHandlerWait:
             None,
         ]
 
-        handler = ResultHandler("msg-1", ["sub-a", "sub-b"], redis, key_prefix="gpmq:")
+        handler = _bound_handler(["sub-a", "sub-b"], redis)
         results = handler.wait(timeout=5.0)
 
         assert len(results) == 2
@@ -89,15 +132,14 @@ class TestResultHandlerWait:
         with patch(
             "gpmq.publisher.result_handler.time.monotonic", side_effect=monotonic_values
         ):
-            handler = ResultHandler(
-                "msg-1", ["sub-a", "sub-b"], redis, key_prefix="gpmq:"
-            )
+            handler = _bound_handler(["sub-a", "sub-b"], redis)
             results = handler.wait(timeout=5.0)
 
         assert len(results) == 2
         assert results["sub-a"].status == ProcessStatus.SUCCESS
         assert results["sub-b"].status == ProcessStatus.TIMEOUT
         assert results["sub-b"].timeout_seconds == 5.0
+        assert results["sub-b"].message_id == "msg-1"
 
     def test_all_timeout(self):
         """Should return TIMEOUT for all subscribers when none respond."""
@@ -110,7 +152,7 @@ class TestResultHandlerWait:
         with patch(
             "gpmq.publisher.result_handler.time.monotonic", side_effect=monotonic_values
         ):
-            handler = ResultHandler("msg-1", ["sub-a"], redis, key_prefix="gpmq:")
+            handler = _bound_handler(["sub-a"], redis)
             results = handler.wait(timeout=5.0)
 
         assert len(results) == 1
@@ -119,7 +161,7 @@ class TestResultHandlerWait:
     def test_no_subscribers_returns_empty(self):
         """Should return empty dict when no subscribers expected."""
         redis = MagicMock()
-        handler = ResultHandler("msg-1", [], redis, key_prefix="gpmq:")
+        handler = _bound_handler([], redis)
         results = handler.wait(timeout=5.0)
         assert results == {}
 
@@ -134,7 +176,7 @@ class TestResultHandlerWait:
         with patch(
             "gpmq.publisher.result_handler.time.monotonic", side_effect=monotonic_values
         ):
-            handler = ResultHandler("msg-1", ["sub-a"], redis, key_prefix="gpmq:")
+            handler = _bound_handler(["sub-a"], redis)
             handler.wait(timeout=5.0)
 
         redis.unsubscribe.assert_called_once()
@@ -148,7 +190,7 @@ class TestResultHandlerWait:
             {"data": _make_result("msg-1", "sub-b")},
         ]
 
-        handler = ResultHandler("msg-1", ["sub-a", "sub-b"], redis, key_prefix="gpmq:")
+        handler = _bound_handler(["sub-a", "sub-b"], redis)
         # Use a very short timeout to avoid hanging in test
         results = handler.wait(timeout=2.0)
 
@@ -167,7 +209,7 @@ class TestResultHandlerWaitAny:
         redis = MagicMock()
         redis.get_message.return_value = {"data": _make_result("msg-1", "sub-a")}
 
-        handler = ResultHandler("msg-1", ["sub-a", "sub-b"], redis, key_prefix="gpmq:")
+        handler = _bound_handler(["sub-a", "sub-b"], redis)
         start = _time.monotonic()
         results = handler.wait_any(timeout=5.0)
         elapsed = _time.monotonic() - start
@@ -187,7 +229,7 @@ class TestResultHandlerWaitAny:
         with patch(
             "gpmq.publisher.result_handler.time.monotonic", side_effect=monotonic_values
         ):
-            handler = ResultHandler("msg-1", ["sub-a"], redis, key_prefix="gpmq:")
+            handler = _bound_handler(["sub-a"], redis)
             results = handler.wait_any(timeout=5.0)
 
         assert results == {}
@@ -195,7 +237,7 @@ class TestResultHandlerWaitAny:
     def test_no_subscribers_returns_empty(self):
         """Should return empty dict when no subscribers expected."""
         redis = MagicMock()
-        handler = ResultHandler("msg-1", [], redis, key_prefix="gpmq:")
+        handler = _bound_handler([], redis)
         results = handler.wait_any(timeout=5.0)
         assert results == {}
 
@@ -208,7 +250,7 @@ class TestResultHandlerStatus:
         redis = MagicMock()
         redis.get_message.return_value = None
 
-        handler = ResultHandler("msg-1", ["sub-a", "sub-b"], redis, key_prefix="gpmq:")
+        handler = _bound_handler(["sub-a", "sub-b"], redis)
         assert not handler.is_complete()
         assert handler.get_completed_count() == 0
         assert handler.get_results() == {}

@@ -9,7 +9,6 @@ import pytest
 from gpmq.config import GPMQConfig
 from gpmq.exceptions import InvalidTargetSubscriberError
 from gpmq.models.message import Message
-from gpmq.models.result import ProcessStatus
 from gpmq.publisher.publisher import Publisher
 
 
@@ -147,6 +146,49 @@ class TestPublisherPublishMessage:
         fields = mock_redis.xadd.call_args[0][1]
         assert "correlation_id" not in fields
 
+    def test_subscribes_before_xadd(self, publisher, mock_redis):
+        """SUBSCRIBE must be issued before XADD (I14 result-loss race)."""
+        calls: list[str] = []
+        mock_redis.get_active_subscribers.return_value = ["sub-a"]
+        mock_redis.get_subscriber_info.return_value = {"message_types": ["test_type"]}
+        mock_redis.subscribe.side_effect = (
+            lambda channels: calls.append("subscribe")
+        )
+        mock_redis.xadd.side_effect = (
+            lambda *a, **k: calls.append("xadd") or "1234567890-0"
+        )
+
+        publisher.publish_message(_make_message())
+
+        assert calls == ["subscribe", "xadd"]
+
+    def test_envelope_reply_token_matches_subscription(
+        self, publisher, mock_redis
+    ):
+        """xadd fields must carry the same reply_token the handler subscribed to."""
+        mock_redis.get_active_subscribers.return_value = ["sub-a"]
+        mock_redis.get_subscriber_info.return_value = {"message_types": ["test_type"]}
+        mock_redis.xadd.return_value = "1234567890-0"
+
+        publisher.publish_message(_make_message())
+
+        token = mock_redis.xadd.call_args[0][1]["reply_token"]
+        assert isinstance(token, str) and len(token) == 32  # uuid4().hex
+        assert mock_redis.subscribe.call_args[0][0] == [f"gpmq:result:{token}:sub-a"]
+
+    def test_reply_token_unique_per_publish(self, publisher, mock_redis):
+        """Each publish must use a fresh reply_token."""
+        mock_redis.get_active_subscribers.return_value = ["sub-a"]
+        mock_redis.get_subscriber_info.return_value = {"message_types": ["test_type"]}
+        mock_redis.xadd.side_effect = ["111-0", "222-0"]
+
+        publisher.publish_message(_make_message())
+        publisher.publish_message(_make_message())
+
+        tokens = [c[0][1]["reply_token"] for c in mock_redis.xadd.call_args_list]
+        assert len(tokens) == 2
+        assert tokens[0] != tokens[1]
+
 
 class TestPublisherGetActiveSubscribers:
     """Tests for get_active_subscribers() method."""
@@ -170,17 +212,12 @@ class TestPublisherGetActiveSubscribers:
         assert result == []
 
 
-class TestPublisherWaitForResults:
-    """Tests for wait_for_results() convenience method."""
+class TestPublisherWaitForResultsRemoved:
+    """wait_for_results was removed with the I14 reply-token rework."""
 
-    def test_creates_handler_and_waits(self, publisher, mock_redis):
-        """Should create ResultHandler and call wait."""
-        mock_redis.get_message.return_value = None
-
-        results = publisher.wait_for_results("msg-1", ["sub-a"], timeout=5.0)
-
-        assert "sub-a" in results
-        assert results["sub-a"].status == ProcessStatus.TIMEOUT
+    def test_method_gone(self):
+        """The zero-caller convenience method must no longer exist."""
+        assert not hasattr(Publisher, "wait_for_results")
 
 
 def test_publisher_handles_none_audit():
@@ -234,6 +271,9 @@ class TestPublisherSendMessage:
         mock_redis.xadd.assert_called_once()
         fields = mock_redis.xadd.call_args[0][1]
         assert fields["type"] == "test_type"
+        # Fire-and-forget path carries no reply token: workers must skip
+        # publishing a result nobody is listening for.
+        assert "reply_token" not in fields
 
     def test_updates_message_id(self, publisher, mock_redis):
         """Should update message.id with Redis-generated ID."""

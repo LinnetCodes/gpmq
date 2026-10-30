@@ -17,12 +17,19 @@ class ResultHandler:
     Subscribes to result channels and collects ProcessResult
     from subscribers as they complete processing.
 
-    Channel format: {key_prefix}result:{message_id}:{subscriber_name}
+    Channel format: {key_prefix}result:{reply_token}:{subscriber_name}
+
+    The handler is created with the caller-generated ``reply_token`` BEFORE
+    the message is added to the stream, so the subscription is already
+    effective when workers become able to publish a result. The
+    redis-generated ``message_id`` is backfilled via :meth:`bind` right
+    after the xadd; callers only obtain handlers through
+    ``Publisher.publish_message``, which always binds before returning.
     """
 
     def __init__(
         self,
-        message_id: str,
+        reply_token: str,
         subscriber_names: list[str],
         redis_adapter: RedisAdapter,
         key_prefix: str,
@@ -31,12 +38,14 @@ class ResultHandler:
         """Initialize result handler and subscribe to result channels.
 
         Args:
-            message_id: Message ID to collect results for
+            reply_token: Publisher-generated routing token carried in the
+                message envelope; identifies the result channels for this call.
             subscriber_names: List of expected subscriber names
             redis_adapter: Redis adapter for Pub/Sub operations
             key_prefix: Redis key prefix for channel names
         """
-        self._message_id = message_id
+        self._reply_token = reply_token
+        self._message_id: Optional[str] = None
         self._expected: set[str] = set(subscriber_names)
         self._results: dict[str, ProcessResult] = {}
         self._redis = redis_adapter
@@ -47,13 +56,24 @@ class ResultHandler:
 
         if self._expected:
             self._channels = [
-                f"{key_prefix}result:{message_id}:{name}" for name in subscriber_names
+                f"{key_prefix}result:{reply_token}:{name}" for name in subscriber_names
             ]
             self._pubsub = self._redis.subscribe(self._channels)
 
+    def bind(self, message_id: str) -> None:
+        """Backfill the redis-generated message ID after the xadd.
+
+        Called by ``Publisher.publish_message`` between the xadd and the
+        return, so callers never observe an unbound handler.
+
+        Args:
+            message_id: Redis stream ID of the published message
+        """
+        self._message_id = message_id
+
     @property
-    def message_id(self) -> str:
-        """Get the message ID this handler is tracking."""
+    def message_id(self) -> Optional[str]:
+        """Get the bound message ID, or None before :meth:`bind`."""
         return self._message_id
 
     def wait(
@@ -79,6 +99,9 @@ class ResultHandler:
         pubsub = self._pubsub
         assert pubsub is not None
 
+        message_id = self._message_id
+        assert message_id is not None, "wait() called before bind(message_id)"
+
         deadline = time.monotonic() + timeout if timeout else None
 
         while len(self._results) < len(self._expected):
@@ -95,7 +118,7 @@ class ResultHandler:
                 result = ProcessResult.model_validate(msg["data"])
                 self._results[result.subscriber_name] = result
                 if self._audit_store:
-                    self._audit_store.save_result(self._message_id, result)
+                    self._audit_store.save_result(message_id, result)
 
         if len(self._results) == len(self._expected):
             self._cleanup()
@@ -106,7 +129,7 @@ class ResultHandler:
             _temp_results = dict(self._results)
             for name in self._expected - set(self._results.keys()):
                 _temp_results[name] = ProcessResult(
-                    message_id=self._message_id,
+                    message_id=message_id,
                     status=ProcessStatus.TIMEOUT,
                     subscriber_name=name,
                     processing_time=elapsed,
@@ -119,7 +142,7 @@ class ResultHandler:
         elapsed = time.monotonic() - self._start_time
         for name in self._expected - set(self._results.keys()):
             self._results[name] = ProcessResult(
-                message_id=self._message_id,
+                message_id=message_id,
                 status=ProcessStatus.TIMEOUT,
                 subscriber_name=name,
                 processing_time=elapsed,
@@ -129,7 +152,7 @@ class ResultHandler:
         if self._audit_store:
             for name, result in self._results.items():
                 if result.status == ProcessStatus.TIMEOUT:
-                    self._audit_store.save_result(self._message_id, result)
+                    self._audit_store.save_result(message_id, result)
 
         self._cleanup()
         return dict(self._results)
@@ -150,6 +173,9 @@ class ResultHandler:
         pubsub = self._pubsub
         assert pubsub is not None
 
+        message_id = self._message_id
+        assert message_id is not None, "wait_any() called before bind(message_id)"
+
         deadline = time.monotonic() + timeout if timeout else None
 
         while len(self._results) < 1:
@@ -166,7 +192,7 @@ class ResultHandler:
                 result = ProcessResult.model_validate(msg["data"])
                 self._results[result.subscriber_name] = result
                 if self._audit_store:
-                    self._audit_store.save_result(self._message_id, result)
+                    self._audit_store.save_result(message_id, result)
 
         if self._results:
             self._cleanup()
