@@ -7,6 +7,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.9.0] - 2026-10-30
+
+### Fixed
+
+- **Publish result-subscribe race (I14): result channels are now keyed by a
+  pre-generated `reply_token` and the subscription is confirmed before the
+  XADD.** Previously the message was XADDed first and the publisher only
+  subscribed to `{prefix}result:{message_id}:{subscriber}` afterwards; a
+  worker blocked on XREADGROUP could pick up a fast message and publish its
+  result before the SUBSCRIBE became effective — Redis Pub/Sub is
+  fire-and-forget, so that result was lost forever and the caller saw
+  TIMEOUT while the worker had processed and ACKed everything (observed at
+  50-75% loss under 24-way concurrent fan-out, ~0 when serial). The publish
+  flow is now: generate `uuid4` reply token → subscribe to
+  `{prefix}result:{reply_token}:{subscriber}` (with the server's SUBSCRIBE
+  confirmations read back — redis-py's `subscribe()` only sends the
+  command) → XADD with the token in the envelope → bind the message ID into
+  the handler. `Message` gains an optional `reply_token` field — a
+  transport-scoped routing credential discarded after the call; it is not
+  persisted and never appears in `ProcessResult` (the message ID keeps all
+  its existing responsibilities). Workers skip the result publish entirely
+  for token-less envelopes, so the fire-and-forget `send` path no longer
+  publishes results nobody listens for; a poison envelope carrying a usable
+  token still routes its EXCEPTION result. **Internal protocol change**:
+  the envelope field and channel naming require publishers and workers on
+  the same gpmq version (same-package deployment — no mixed-version concern).
+  - 发布结果订阅竞态（I14）：结果频道改由预生成的 `reply_token` 寻址，且订阅
+    在 XADD 之前经服务端确认。此前消息先 XADD、发布方后才订阅
+    `{prefix}result:{message_id}:{subscriber}`——阻塞在 XREADGROUP 的 worker
+    可能在订阅生效前处理完快消息并回发结果，Pub/Sub 即发即弃，结果永久丢失，
+    调用方拿到 TIMEOUT 而 worker 已处理并 XACK（24 路并发扇出下丢失率
+    50-75%，串行≈0）。新发布流程：生成 `uuid4` reply token → 订阅
+    `{prefix}result:{reply_token}:{subscriber}`（读回 SUBSCRIBE 确认——
+    redis-py 的 `subscribe()` 只保证发出）→ 信封携带 token XADD → 回填
+    message ID。`Message` 新增可选 `reply_token` 字段——纯传输期路由凭证、
+    用后即弃，不落库、不进 `ProcessResult`（message ID 职责不变）。无 token
+    信封（`send` 路径）worker 直接跳过结果发布，不再向无人频道发垃圾
+    publish；携带可用 token 的 poison 信封仍尽力路由 EXCEPTION 结果。
+    **内部协议变更**：publisher 与 worker 需同版本部署（同包发布，无混布场景）。
+
+### Removed
+
+- **`Publisher.wait_for_results()`**: zero callers in gpmq and downstream
+  projects; with token-keyed result channels a bare `message_id` can no
+  longer subscribe after the fact. Collect results via the `ResultHandler`
+  returned by `publish_message()`.
+  - 移除 `Publisher.wait_for_results()`：gpmq 与下游全库零调用方；结果频道
+    改由 token 寻址后，裸 `message_id` 事后已订不到频道。请使用
+    `publish_message()` 返回的 `ResultHandler` 收集结果。
+
+---
+
 ## [0.8.0] - 2026-10-29
 
 ### Added
