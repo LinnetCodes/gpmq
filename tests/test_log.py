@@ -1,5 +1,8 @@
 """Tests for gpmq.log get_logger."""
 
+import subprocess
+import sys
+
 import pytest
 from gpconfig import ConfigNotFoundError
 
@@ -92,3 +95,31 @@ def test_lookup_skipped_when_no_config_manager():
     # Nothing to assert on a real object here beyond no exception; the key
     # property is covered by the other two tests.
     assert log._lookup_done is True
+
+
+def test_importing_gpmq_does_not_consume_lookup():
+    """Importing gpmq must leave the once-per-process 'logs' lookup unspent.
+
+    Any get_logger() call that runs at import time (e.g. a module-level
+    ``logger = get_logger(...)``) happens during ``import gpmq``, before the
+    application can call set_config_manager(). It latches the lookup with no
+    config manager, so every later get_logger() skips it and the gpclog YAML
+    logger config is silently disabled for the whole process.
+
+    Runs in a fresh interpreter: this module's autouse fixture resets the
+    latch in-process, and the test process imported gpmq long ago anyway.
+    """
+    code = (
+        "import sys; import gpmq, gpmq.log; "
+        "sys.exit(0 if gpmq.log._lookup_done is False else 1)"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert proc.returncode == 0, (
+        "importing gpmq consumed gpmq.log's once-per-process config lookup "
+        f"(exit {proc.returncode})\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+    )

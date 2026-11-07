@@ -201,7 +201,7 @@ class GPMQClient:
         payload: dict[str, Any],
         correlation_id: Optional[str] = None,
         target_subscribers: Optional[Union[str, list[str]]] = None,
-    ) -> str:
+    ) -> Optional[str]:
         """Fire-and-forget publish: send message without collecting results.
 
         Publishes message to the stream but does not subscribe to result
@@ -215,7 +215,9 @@ class GPMQClient:
                 None (default) broadcasts to all matching.
 
         Returns:
-            Redis-generated message ID for logging/tracking
+            Redis-generated message ID for logging/tracking, or None when
+            the message was skipped (publish_require_subscriber enabled, no
+            registered handler)
         """
         targets = self._normalize_targets(target_subscribers)
         message = Message(

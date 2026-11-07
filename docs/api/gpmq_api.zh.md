@@ -16,6 +16,7 @@
 - [Subscriber](#subscriber)
 - [ResultHandler](#resulthandler)
 - [GPMQAsyncBatchHandler](#gpmqasyncbatchhandler)
+- [Stream 保留策略](#stream-保留策略)
 - [GPMQProgress](#gpmqprogress)
 - [装饰器](#装饰器)
   - [message_handler](#message_handler)
@@ -207,7 +208,7 @@ send(
     payload: dict,
     correlation_id: Optional[str] = None,
     target_subscribers: Optional[Union[str, list[str]]] = None,
-) -> str
+) -> Optional[str]
 ```
 
 发后即忘（fire-and-forget）发布。将消息写入 Redis Stream，但**不订阅**结果通道。不创建 `ResultHandler`，避免 Pub/Sub 资源开销。
@@ -221,7 +222,7 @@ send(
 | `correlation_id` | `str?` | 可选，用于追踪消息链的关联 ID |
 | `target_subscribers` | `str \| list[str] \| None` | 可选，允许处理的订阅者名称白名单。详见[定向发布](#定向发布)。 |
 
-**返回值** — Redis 生成的消息 ID（可用于日志记录）。
+**返回值** — Redis 生成的消息 ID（可用于日志记录）；若设置了 `publish_require_subscriber: true` 且没有已注册的订阅者处理该消息类型，消息会被跳过，返回 `None`。
 
 **适用场景** — 通知类消息，不需要知道订阅者是否/何时处理完成（如发送邮件、记录事件日志等）。
 
@@ -397,7 +398,7 @@ start() -> None
 stop() -> None
 ```
 
-优雅停止订阅者：停止 Worker → 停止心跳线程 → 从 Redis 注销 → 断开连接。
+优雅停止订阅者：停止 Worker → 停止心跳线程 → 若为最后一个已注册的订阅者则先执行一次最终 Stream 裁剪（详见 [Stream 保留策略](#stream-保留策略)）→ 从 Redis 注销 → 断开连接。
 
 **注意事项**
 - 等待最多 `subscriber_timeout`（取自配置）让每个 Worker 优雅退出；若仍存活，则发送 SIGTERM 并再等待一段宽限时间。
@@ -599,6 +600,23 @@ with client.async_batch(progress, timeout=30) as batch:
 # 退出时自动调用 wait_all()
 results = batch.get_all_result()
 ```
+
+---
+
+## Stream 保留策略
+
+默认情况下，每个订阅者的心跳线程会定期用 `XTRIM MINID` 把 Redis Stream 裁剪到安全点：对每个**已注册**消费组，取其最后投递 ID 与 PEL（待处理条目列表）最小 ID 的较小值，再在全体已注册组中取最小。只要一个条目尚未投递给某个已注册订阅者、或仍滞留在其消费组的 PEL 中，该条目就不会被移除，崩溃订阅者的积压消息因此能完整保留到它恢复上线。全新的订阅者（首次创建消费组）因此只会补读一小段尾部——自上次裁剪以来新增的条目，加上安全点及其之后的条目（任一已注册订阅者仍需要的条目，以及安全点处那条条目本身）——而不是整个历史记录。
+
+保留策略由以下 `GPMQConfig` 字段控制（默认写在 `gpmq/common.yaml`，可在各组件的专属配置中覆盖）：
+
+| 字段 | 默认值 | 说明 |
+|------|--------|------|
+| `stream_trim_interval` | `60.0` | 每个订阅者心跳线程执行裁剪的间隔秒数（裁剪随心跳轮次执行，实际间隔不小于 `heartbeat_interval`）。`0` 仅关闭订阅者侧的裁剪（周期裁剪与停止时收尾）；发布者侧的 `stream_trim_idle_maxlen` 上限独立生效。 |
+| `stream_trim_on_last_stop` | `true` | 最后一个已注册的订阅者停止时执行一次最终裁剪。 |
+| `stream_trim_idle_maxlen` | `None` | 注册表为空期间，发布者通过 `XADD MAXLEN N` 为 Stream 施加条目数上限。`None` = 不设上限。 |
+| `publish_require_subscriber` | `false` | 没有**已注册**订阅者声明该消息类型时，直接跳过发布（不写入 Stream）。已注册但离线的订阅者仍会收到消息，因此崩溃后仍能补上离线期间的消息。 |
+
+**注意** — 若某个 Worker 在处理中途死亡，其 pending 条目永远不会被回收（gpmq 目前没有自动认领机制），且会永久卡住安全点——此后裁剪退化为空操作（内存表现与不裁剪时一致），直到手动清除该条目或注销该订阅者。
 
 ---
 

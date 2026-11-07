@@ -48,6 +48,15 @@ class GPMQConfig(GPConfig):
         stream_name: Name of the Redis Stream
         heartbeat_interval: Heartbeat interval in seconds
         registry_key_prefix: Prefix for registry keys in Redis
+        stream_trim_interval: Seconds between stream-retention trims
+            run by each subscriber's heartbeat thread (0 disables
+            subscriber-side trimming; publisher-side idle cap independent)
+        stream_trim_on_last_stop: Whether the last registered subscriber
+            performs a final trim on stop
+        stream_trim_idle_maxlen: Hard entry cap applied via XADD MAXLEN
+            only while the registry is empty (None = unbounded)
+        publish_require_subscriber: Skip publishing when no REGISTERED
+            subscriber declares the message type
         audit_db_path: Path to SQLite audit database
         enable_audit: Enable or disable audit store
         log_category: Log category for gpclog
@@ -107,6 +116,36 @@ class GPMQConfig(GPConfig):
     )
     registry_key_prefix: str = Field(
         default="gpmq:", description="Redis key prefix for registry"
+    )
+
+    # Stream retention (see dev_docs/specs/2026-11-07-stream-retention.md)
+    stream_trim_interval: float = Field(
+        default=60.0,
+        ge=0,
+        description=(
+            "Seconds between stream-retention trims run by each subscriber's "
+            "heartbeat thread; 0 disables subscriber-side trimming "
+            "(publisher-side idle cap independent)"
+        ),
+    )
+    stream_trim_on_last_stop: bool = Field(
+        default=True,
+        description="Final trim by the last registered subscriber on stop",
+    )
+    stream_trim_idle_maxlen: Optional[int] = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Hard entry cap applied via XADD MAXLEN only while the "
+            "registry is empty; None = unbounded"
+        ),
+    )
+    publish_require_subscriber: bool = Field(
+        default=False,
+        description=(
+            "Skip publishing when no REGISTERED subscriber declares the "
+            "message type (registration-based, preserves crash catch-up)"
+        ),
     )
 
     @field_validator("registry_key_prefix")

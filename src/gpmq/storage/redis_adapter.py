@@ -18,6 +18,16 @@ T = TypeVar("T")
 _SUBSCRIBE_ACK_TIMEOUT_SECONDS: float = 5.0
 
 
+def _stream_id_key(entry_id: str) -> tuple[int, int]:
+    """Convert a Redis Stream ID ("<ms>-<seq>") to a comparable tuple.
+
+    Numeric comparison is required: lexicographic order is wrong across
+    millisecond-timestamp lengths (e.g. "999-0" vs "1000-0").
+    """
+    ms, _, seq = entry_id.partition("-")
+    return (int(ms), int(seq))
+
+
 class RedisAdapter:
     """Redis adapter with retry logic for GPMQ operations.
 
@@ -144,12 +154,23 @@ class RedisAdapter:
         except redis.RedisError:
             return False
 
-    def xadd(self, stream: str, fields: dict[str, Any]) -> str:
+    def xadd(
+        self,
+        stream: str,
+        fields: dict[str, Any],
+        *,
+        maxlen: int | None = None,
+        approximate: bool = True,
+    ) -> str:
         """Add entry to stream.
 
         Args:
             stream: Stream name
             fields: Field-value pairs for the entry
+            maxlen: Cap the stream at this many entries, trimmed atomically
+                with the add (XADD MAXLEN); None (default) = no trimming
+            approximate: Use "~" approximate trimming when maxlen is set
+                (faster, may trim less)
 
         Returns:
             Redis-generated message ID (e.g., "1678901234567-0")
@@ -162,7 +183,9 @@ class RedisAdapter:
             client = self._require_client()
             # redis-py's xadd mapping type uses invariant dict unions that our
             # public dict[str, Any] can't satisfy; runtime accepts any encodable mapping.
-            return client.xadd(stream, cast(Any, fields))  # type: ignore[return-value]
+            return client.xadd(
+                stream, cast(Any, fields), maxlen=maxlen, approximate=approximate
+            )  # type: ignore[return-value]
 
         return self._retry_on_transient_errors(_xadd)
 
@@ -317,6 +340,142 @@ class RedisAdapter:
                 return 0
 
         return self._retry_on_transient_errors(_xgroup_destroy)
+
+    def xtrim_minid(self, stream: str, minid: str, approximate: bool = True) -> int:
+        """Trim stream entries with IDs below minid.
+
+        Args:
+            stream: Stream name
+            minid: Threshold ID; entries with ID strictly below are removed
+            approximate: Use "~" approximate trimming (faster, may trim less)
+
+        Returns:
+            Number of entries removed from the stream
+
+        Raises:
+            RedisConnectionError: On connection failure after retries
+        """
+
+        def _xtrim() -> int:
+            client = self._require_client()
+            return client.xtrim(stream, minid=minid, approximate=approximate)
+
+        return self._retry_on_transient_errors(_xtrim)
+
+    def xinfo_groups(self, stream: str) -> list[dict[str, Any]]:
+        """List consumer groups on a stream.
+
+        Args:
+            stream: Stream name
+
+        Returns:
+            List of group info dicts (name, last-delivered-id, pending, ...)
+
+        Raises:
+            RedisConnectionError: On connection failure after retries
+            redis.ResponseError: If the stream does not exist
+        """
+
+        def _xinfo() -> list[dict[str, Any]]:
+            client = self._require_client()
+            # The sync-client overload is already typed list[dict[str, Any]]
+            # (a cast would be redundant under mypy strict); decode_responses=True
+            # guarantees str keys/values at runtime.
+            return client.xinfo_groups(stream)
+
+        return self._retry_on_transient_errors(_xinfo)
+
+    def get_registered_subscribers(self) -> list[str]:
+        """Get all registered subscriber names (no liveness filtering).
+
+        Returns:
+            Sorted list of subscriber names in the registry set
+
+        Raises:
+            RedisConnectionError: On connection failure after retries
+        """
+
+        def _get() -> list[str]:
+            client = self._require_client()
+            key_prefix = self._config.registry_key_prefix
+            members = client.smembers(f"{key_prefix}subscribers")
+            # decode_responses=True guarantees str members at runtime.
+            return sorted(cast("set[str]", members))
+
+        return self._retry_on_transient_errors(_get)
+
+    def trim_stream_to_registered_progress(self) -> int:
+        """Trim entries no registered consumer group still needs.
+
+        Computes the safe trim point as the minimum over all REGISTERED
+        subscribers' consumer groups of ``min(last-delivered-id, smallest
+        pending PEL id)`` — entries at or above that point survive — then
+        runs ``XTRIM MINID``. Groups left over from unregistered
+        (renamed/removed) subscribers do not block the trim; a registered
+        subscriber without a group on this stream blocks it entirely
+        (conservative: treat as "nothing delivered yet"). A registered
+        subscriber whose stream is unknown (no info hash, or a legacy info
+        without ``stream_name``) counts as being on this stream.
+
+        Returns:
+            Number of entries removed from the stream
+
+        Raises:
+            RedisConnectionError: On connection failure after retries
+            redis.ResponseError: On a server error other than a missing
+                stream, propagated to the caller: e.g. WRONGTYPE/NOPERM from
+                XINFO GROUPS, or NOGROUP from XPENDING when the stream or a
+                group is deleted mid-scan
+        """
+        stream = self._config.stream_name
+        # Read order is load-bearing: groups BEFORE the registry. Subscribers
+        # register before creating their group (Subscriber.start), so one that
+        # starts mid-trim is in both snapshots or registry-only (which blocks
+        # the trim). Registry-first could mistake its new group for an
+        # unregistered leftover and trim its earliest messages.
+        try:
+            groups = {g["name"]: g for g in self.xinfo_groups(stream)}
+        except redis.ResponseError as e:
+            # Missing stream: nothing to trim. (A stream without groups does
+            # not raise: it returns [], so registered names take the no-group
+            # branch below.) Anything else, e.g. WRONGTYPE or NOPERM, must
+            # surface instead of silently disabling trimming.
+            if "no such key" not in str(e):
+                raise
+            return 0
+
+        # No info hash (a concurrent register/unregister) or a legacy info
+        # without stream_name: assume this stream. That is the safe direction,
+        # as an extra registered name can only hold the trim back.
+        registered = [
+            name
+            for name in self.get_registered_subscribers()
+            if (self.get_subscriber_info(name) or {}).get("stream_name", stream)
+            == stream
+        ]
+        if not registered:
+            return 0
+
+        safe: tuple[int, int] | None = None
+        for name in registered:
+            group = groups.get(name)
+            if group is None:
+                # Registered but its group is not on this stream yet —
+                # keep every entry.
+                return 0
+            candidate = _stream_id_key(group["last-delivered-id"])
+            pel = self.xpending(stream, name)
+            if pel.get("pending") and pel.get("min"):
+                candidate = min(candidate, _stream_id_key(pel["min"]))
+            if safe is None or candidate < safe:
+                safe = candidate
+
+        if safe is None or safe <= (0, 0):
+            return 0
+        # Exact trim (not "~"): approximate mode is a no-op below a whole
+        # radix node (~100 entries) on this Redis, which would re-open the
+        # history-replay problem. Exact cost is negligible at project scale.
+        return self.xtrim_minid(stream, f"{safe[0]}-{safe[1]}", approximate=False)
 
     def register_subscriber(self, name: str, info: dict[str, Any]) -> None:
         """Register subscriber in Redis.
@@ -584,14 +743,17 @@ class RedisAdapter:
         stream: str,
         group: str,
     ) -> dict[str, Any]:
-        """Get pending message info.
+        """Get pending-entries (PEL) summary for a consumer group.
 
         Args:
             stream: Stream name
             group: Consumer group name
 
         Returns:
-            Dict with keys: count, min_id, max_id, consumers
+            Summary dict {"pending": count, "min": id | None, "max": id | None,
+            "consumers": [...]} (min/max are None when nothing is pending),
+            plus the legacy aliases "count", "min_id" and "max_id" holding
+            the same values as "pending", "min" and "max"
 
         Raises:
             RedisConnectionError: On connection failure after retries
@@ -599,13 +761,15 @@ class RedisAdapter:
 
         def _xpending() -> dict[str, Any]:
             client = self._require_client()
-            result = client.xpending(stream, group)
-            # result: {'pending': count, 'min': min_id, 'max': max_id, 'consumers': [...]}
+            # redis-py: {'pending': count, 'min': id, 'max': id, 'consumers': [...]}
+            summary = client.xpending(stream, group)
+            # Raw redis-py keys are the primary contract (stream trimming reads
+            # "pending"/"min"); the aliases keep earlier callers working.
             return {
-                "count": result.get("pending", 0),
-                "min_id": result.get("min"),
-                "max_id": result.get("max"),
-                "consumers": result.get("consumers", []),
+                **summary,
+                "count": summary.get("pending", 0),
+                "min_id": summary.get("min"),
+                "max_id": summary.get("max"),
             }
 
         return self._retry_on_transient_errors(_xpending)

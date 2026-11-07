@@ -43,6 +43,7 @@ class Subscriber:
         self._heartbeat_thread: threading.Thread | None = None
         self._heartbeat_stop = threading.Event()
         self._running = False
+        self._next_trim_at = 0.0  # stream-retention trim throttle (epoch)
         self._worker_ctx: dict[str, Any] = (
             dict()
         )  # worker context data that will be passed to worker processes
@@ -138,6 +139,35 @@ class Subscriber:
         if self._heartbeat_thread and self._heartbeat_thread.is_alive():
             self._heartbeat_thread.join(timeout=10)
         self._heartbeat_thread = None
+
+        # Final retention trim when this is the last registered subscriber.
+        # Runs before unregistering so our own group's cursor/PEL still
+        # constrains the safe trim point. Heartbeat join may have timed out
+        # (thread still alive) — concurrent XTRIM is idempotent, safe.
+        # Config flags first (free), ping() last: it bypasses the adapter's
+        # retry/backoff, so with Redis down the trim is skipped instead of
+        # paying a full retry cycle on the registry read.
+        if (
+            self._redis
+            and self._config.stream_trim_interval > 0
+            and self._config.stream_trim_on_last_stop
+            and self._redis.ping()
+        ):
+            try:
+                registered = set(self._redis.get_registered_subscribers())
+                if registered <= {self.name}:
+                    trimmed = self._redis.trim_stream_to_registered_progress()
+                    if trimmed:
+                        logger.info(
+                            "Final stream trim on stop removed {} entries",
+                            trimmed,
+                        )
+            except Exception:
+                logger.error(
+                    "Final stream trim failed for {}\n{}",
+                    self.name,
+                    traceback.format_exc(),
+                )
 
         if self._redis:
             self._redis.unregister_subscriber(self.name)
@@ -251,3 +281,28 @@ class Subscriber:
                     self.name,
                     traceback.format_exc(),
                 )
+            self._maybe_trim()
+
+    def _maybe_trim(self) -> None:
+        """Run the throttled stream-retention trim (heartbeat thread).
+
+        Trim failures are logged and never propagated — retention must not
+        jeopardize the heartbeat loop.
+        """
+        interval = self._config.stream_trim_interval
+        if interval <= 0 or not self._redis:
+            return
+        now = time.time()
+        if now < self._next_trim_at:
+            return
+        self._next_trim_at = now + interval
+        try:
+            trimmed = self._redis.trim_stream_to_registered_progress()
+            if trimmed:
+                logger.info("Stream retention trim removed {} entries", trimmed)
+        except Exception:
+            logger.error(
+                "Stream retention trim failed for {}\n{}",
+                self.name,
+                traceback.format_exc(),
+            )

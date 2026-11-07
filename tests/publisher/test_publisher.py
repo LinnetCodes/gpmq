@@ -2,7 +2,7 @@
 
 import json
 from datetime import datetime, timezone
-from unittest.mock import MagicMock
+from unittest.mock import ANY, MagicMock
 
 import pytest
 
@@ -463,3 +463,80 @@ class TestPublisherSendMessageTargeting:
             publisher.send_message(msg)
 
         mock_redis.xadd.assert_not_called()
+
+
+class TestPublishRequireSubscriber:
+    """publish_require_subscriber gate (registration-based)."""
+
+    def test_gate_off_by_default_publishes_without_subscribers(
+        self, publisher, mock_redis
+    ):
+        """Default config keeps legacy behavior: xadd even with nobody listening."""
+        mock_redis.get_active_subscribers.return_value = []
+        mock_redis.xadd.return_value = "1-1"
+        message_id, _handler = publisher.publish_message(_make_message())
+        assert message_id == "1-1"
+        mock_redis.xadd.assert_called_once()
+
+    def test_gate_skips_when_no_registered_handler(
+        self, publisher, mock_redis, mock_config
+    ):
+        """Gate on + no registered handler: no xadd, empty handler."""
+        mock_config.publish_require_subscriber = True
+        mock_redis.get_active_subscribers.return_value = []
+        mock_redis.get_registered_subscribers.return_value = []
+        message_id, handler = publisher.publish_message(_make_message())
+        assert message_id == ""
+        mock_redis.xadd.assert_not_called()
+        assert handler.wait(timeout=0.5) == {}
+
+    def test_gate_publishes_for_registered_but_offline_handler(
+        self, publisher, mock_redis, mock_config
+    ):
+        """Registered-but-offline handlers keep the catch-up window."""
+        mock_config.publish_require_subscriber = True
+        mock_redis.get_active_subscribers.return_value = []  # nobody alive
+        mock_redis.get_registered_subscribers.return_value = ["sub_a"]
+        mock_redis.get_subscriber_info.return_value = {
+            "message_types": ["test_type"],
+            "stream_name": mock_config.stream_name,
+        }
+        mock_redis.xadd.return_value = "1-1"
+        message_id, _handler = publisher.publish_message(_make_message())
+        assert message_id == "1-1"
+        mock_redis.xadd.assert_called_once()
+
+    def test_send_skips_and_returns_none(self, publisher, mock_redis, mock_config):
+        """Fire-and-forget send returns None when gated."""
+        mock_config.publish_require_subscriber = True
+        mock_redis.get_registered_subscribers.return_value = []
+        assert publisher.send_message(_make_message()) is None
+        mock_redis.xadd.assert_not_called()
+
+
+class TestIdleTrimMaxlen:
+    """stream_trim_idle_maxlen cap applied only while the registry is empty."""
+
+    def test_maxlen_applied_when_registry_empty(
+        self, publisher, mock_redis, mock_config
+    ):
+        mock_config.stream_trim_idle_maxlen = 1000
+        mock_redis.get_active_subscribers.return_value = []
+        mock_redis.get_registered_subscribers.return_value = []
+        mock_redis.xadd.return_value = "1-1"
+        publisher.publish_message(_make_message())
+        mock_redis.xadd.assert_called_once_with(
+            mock_config.stream_name, ANY, maxlen=1000, approximate=False
+        )
+
+    def test_maxlen_skipped_when_registry_non_empty(
+        self, publisher, mock_redis, mock_config
+    ):
+        mock_config.stream_trim_idle_maxlen = 1000
+        mock_redis.get_active_subscribers.return_value = []
+        mock_redis.get_registered_subscribers.return_value = ["sub_a"]
+        mock_redis.xadd.return_value = "1-1"
+        publisher.publish_message(_make_message())
+        mock_redis.xadd.assert_called_once_with(
+            mock_config.stream_name, ANY, maxlen=None, approximate=False
+        )

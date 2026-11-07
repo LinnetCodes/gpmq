@@ -7,6 +7,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.10.0] - 2026-11-07
+
+### Added
+
+- **Stream retention: acknowledged stream entries are now reclaimed, and a
+  new subscriber replays only a short tail instead of the whole history.**
+  Each subscriber's heartbeat thread periodically trims the stream to the
+  safe point `min(last-delivered-id, PEL min)` over all registered consumer
+  groups (exact `XTRIM MINID`), so entries below that point are reclaimed
+  while anything undelivered or pending (PEL) for any registered subscriber
+  survives — the crash-recovery catch-up semantics are unchanged.
+  `XTRIM MINID` is strictly-lower-than semantics, so the entry at the safe
+  point itself survives until a later trim advances past it (O(1)
+  steady-state residue). A brand-new subscriber (one whose consumer group is
+  created for the first time) therefore replays only the entries added since
+  the last trim, plus everything at or above the safe point (anything a
+  registered subscriber still needs, and the safe-point entry itself).
+  Leftover groups of unregistered (renamed/removed) subscribers no longer
+  pin the stream. Controlled by `stream_trim_interval` (default 60s; `0`
+  disables subscriber-side trimming, both periodic and on-stop) and
+  `stream_trim_on_last_stop` (final trim by the last registered subscriber,
+  default on). Two publisher-side complements, independent of
+  `stream_trim_interval`: `stream_trim_idle_maxlen` caps the stream (exact
+  `XADD MAXLEN`, default `None` = no cap) while the registry is empty, and
+  `publish_require_subscriber` (default off) skips the publish entirely when
+  no registered subscriber declares the message type (registration-based,
+  so offline-but-registered subscribers keep their catch-up window).
+  Caveat: a pending entry orphaned by a worker that died mid-processing is
+  never reclaimed (gpmq has no auto-claim yet) and pins the safe point, so
+  trimming degrades to a no-op until that entry is cleared or the subscriber
+  is unregistered.
+  - Stream 保留策略：已确认的 Stream 条目现在会被回收，全新订阅者只补读一小段
+    尾部，而不再重放整个历史记录。每个订阅者的心跳线程定期把 Stream 裁剪到
+    安全点——在全体已注册消费组上取 `min(最后投递 ID, PEL 最小 ID)` 的最小值，
+    执行精确的 `XTRIM MINID`：低于安全点的条目被回收，而任一已注册订阅者尚未
+    投递或仍滞留在 PEL（待处理条目列表）中的条目都会保留——崩溃恢复后的补读
+    语义不变。`XTRIM MINID` 只移除严格小于安全点的条目，安全点处那条条目本身
+    会保留，直到后续裁剪越过它（稳态残留 O(1)）。全新的订阅者（首次创建消费组）
+    因此只会补读自上次裁剪以来新增的条目，加上安全点及其之后的条目（任一已注册
+    订阅者仍需要的条目，以及安全点处那条条目本身）。已注销（改名/移除）订阅者
+    遗留的消费组不再卡住 Stream。由 `stream_trim_interval`（默认 60 秒；`0`
+    关闭订阅者侧的裁剪，包括周期裁剪与停止时收尾）与
+    `stream_trim_on_last_stop`（最后一个已注册订阅者停止时执行最终裁剪，默认
+    开启）控制。发布者侧另有两项补充，均不受 `stream_trim_interval` 影响：
+    `stream_trim_idle_maxlen` 在注册表为空期间以精确的 `XADD MAXLEN` 为
+    Stream 施加条目数上限（默认 `None` = 不设上限）；
+    `publish_require_subscriber`（默认关闭）在没有已注册订阅者声明该消息类型
+    时直接跳过发布（按注册判定，已注册但离线的订阅者仍保有补读窗口）。注意：
+    若某个 Worker 在处理中途死亡，其 pending 条目不会被回收（gpmq 目前没有
+    自动认领机制），会一直卡住安全点，裁剪随之退化为空操作，直到手动清除该
+    条目或注销该订阅者。
+
+### Changed
+
+- `GPMQClient.send` / `Publisher.send_message` now return `Optional[str]`:
+  `None` means the message was skipped by `publish_require_subscriber`.
+  A skipped `publish`/`publish_async` returns `("", ResultHandler)` whose
+  `wait()` is `{}` immediately — existing return types and the `async_batch`
+  contract are unchanged.
+  - `GPMQClient.send` / `Publisher.send_message` 的返回类型改为
+    `Optional[str]`：`None` 表示消息被 `publish_require_subscriber` 跳过。
+    被跳过的 `publish`/`publish_async` 返回 `("", ResultHandler)`，其 `wait()`
+    立即返回 `{}`——既有返回类型与 `async_batch` 契约均不变。
+
+---
+
 ## [0.9.0] - 2026-10-30
 
 ### Fixed

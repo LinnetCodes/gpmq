@@ -853,3 +853,30 @@ class TestDottedDefaultCfgPath:
             assert sub.name == "notifier"
         finally:
             cfg_module._gpmq_cfg_mgr = saved_mgr
+
+
+class TestStreamRetentionConfig:
+    """Tests for stream retention config fields."""
+
+    def test_stream_retention_defaults(self):
+        """Stream retention fields should default to trim-on, gate-off."""
+        config = GPMQConfig()
+        assert config.stream_trim_interval == 60.0
+        assert config.stream_trim_on_last_stop is True
+        assert config.stream_trim_idle_maxlen is None
+        assert config.publish_require_subscriber is False
+
+    def test_stream_trim_interval_zero_disables(self):
+        """stream_trim_interval=0 (disable) must be accepted."""
+        config = GPMQConfig(stream_trim_interval=0.0)
+        assert config.stream_trim_interval == 0.0
+
+    def test_stream_trim_interval_rejects_negative(self):
+        """Negative trim interval must be rejected."""
+        with pytest.raises(Exception):  # Pydantic ValidationError
+            GPMQConfig(stream_trim_interval=-1.0)
+
+    def test_stream_trim_idle_maxlen_rejects_zero(self):
+        """idle maxlen below 1 must be rejected."""
+        with pytest.raises(Exception):  # Pydantic ValidationError
+            GPMQConfig(stream_trim_idle_maxlen=0)

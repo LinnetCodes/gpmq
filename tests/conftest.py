@@ -37,7 +37,15 @@ def redis_adapter(redis_config) -> RedisAdapter:
     # Cleanup test streams before disconnect
     try:
         # Clean up test streams
-        for stream in ["test:stream", "test:stream:range", "gpmq:messages"]:
+        for stream in [
+            "test:stream",
+            "test:stream:range",
+            "gpmq:messages",
+            "test:stream:maxlen",
+            "test:stream:xtrim",
+            "test:stream:xinfo",
+            "test:stream:trim",
+        ]:
             try:
                 adapter._client.delete(stream)
             except (redis.ConnectionError, redis.RedisError, AttributeError):

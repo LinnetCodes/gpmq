@@ -16,6 +16,7 @@ Configuration and lifecycle management functions, plus the core classes for publ
 - [Subscriber](#subscriber)
 - [ResultHandler](#resulthandler)
 - [GPMQAsyncBatchHandler](#gpmqasyncbatchhandler)
+- [Stream retention](#stream-retention)
 - [GPMQProgress](#gpmqprogress)
 - [Decorators](#decorators)
   - [message_handler](#message_handler)
@@ -207,7 +208,7 @@ send(
     payload: dict,
     correlation_id: Optional[str] = None,
     target_subscribers: Optional[Union[str, list[str]]] = None,
-) -> str
+) -> Optional[str]
 ```
 
 Fire-and-forget publish. Sends the message to the Redis Stream but does **not** subscribe to result channels. No `ResultHandler` is created, avoiding Pub/Sub resource overhead.
@@ -221,7 +222,7 @@ Fire-and-forget publish. Sends the message to the Redis Stream but does **not** 
 | `correlation_id` | `str?` | Optional ID for tracing message chains |
 | `target_subscribers` | `str \| list[str] \| None` | Optional allow-list of subscriber names. See [Targeted publishing](#targeted-publishing). |
 
-**Returns** — The Redis-generated message ID (useful for logging).
+**Returns** — The Redis-generated message ID (useful for logging), or `None` when the message was skipped because `publish_require_subscriber: true` is set and no registered subscriber handles its type.
 
 **When to use** — Notification-style messages where you don't need to know if or when subscribers processed them (e.g., sending emails, logging events).
 
@@ -397,7 +398,7 @@ Start the subscriber. Performs: connect to Redis → load handlers → validate 
 stop() -> None
 ```
 
-Gracefully stop the subscriber: stop workers, stop heartbeat thread, unregister from Redis, disconnect.
+Gracefully stop the subscriber: stop workers, stop heartbeat thread, perform a final stream trim if this is the last registered subscriber (see [Stream retention](#stream-retention)), unregister from Redis, disconnect.
 
 **Notes**
 - Waits up to `subscriber_timeout` (from config) for each worker to exit gracefully; if still alive, sends SIGTERM and waits a brief grace period.
@@ -599,6 +600,23 @@ with client.async_batch(progress, timeout=30) as batch:
 # wait_all() is called automatically on exit
 results = batch.get_all_result()
 ```
+
+---
+
+## Stream retention
+
+By default, each subscriber's heartbeat thread periodically trims the Redis Stream (`XTRIM MINID`) up to a safe point: the minimum, over **all registered** consumer groups, of each group's last-delivered ID and smallest pending (PEL) ID. An entry survives as long as it has not yet been delivered to some registered subscriber, or it is still pending (PEL) in that subscriber's group — so a crashed subscriber's backlog is kept until it comes back. A brand-new subscriber (one whose consumer group is created for the first time) therefore replays only a short tail — entries added since the last trim, plus everything at or above the safe point (anything a registered subscriber still needs, and the safe-point entry itself) — instead of the whole history.
+
+Retention is configured through these `GPMQConfig` fields (set in `gpmq/common.yaml`, overridable per component):
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `stream_trim_interval` | `60.0` | Seconds between trims run by each subscriber's heartbeat thread (trims run on heartbeat rounds, so the effective interval is at least `heartbeat_interval`). `0` disables subscriber-side trimming (periodic and on-stop); the publisher-side `stream_trim_idle_maxlen` cap is independent. |
+| `stream_trim_on_last_stop` | `true` | The last registered subscriber performs a final trim when it stops. |
+| `stream_trim_idle_maxlen` | `None` | While the registry is empty, publishers cap the stream via `XADD MAXLEN N`. `None` = unbounded. |
+| `publish_require_subscriber` | `false` | Skip the publish entirely (no stream entry) when no **registered** subscriber declares the message type. Registered-but-offline subscribers still receive messages, so crash catch-up is preserved. |
+
+**Caveat** — If a worker dies mid-processing, its pending entry is never reclaimed (gpmq has no auto-claim today) and permanently pins the safe point — trimming then degrades to a no-op (memory equals the untrimmed behavior) until the entry is manually cleared or the subscriber is unregistered.
 
 ---
 

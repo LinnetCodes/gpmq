@@ -513,3 +513,86 @@ class TestSubscribeAckConfirmation:
         ):
             with pytest.raises(RedisConnectionError):
                 adapter.subscribe(["ch-a"])
+
+
+def test_xadd_with_maxlen(redis_adapter):
+    """xadd maxlen should cap stream length, evicting the oldest entries."""
+    # Exact trimming: '~' only evicts whole internal stream nodes
+    # (stream-node-max-entries, default 100), so on a tiny stream it is a
+    # no-op. The '~' default is pinned by test_trim_primitives_default_to_approximate.
+    for i in range(8):
+        redis_adapter.xadd(
+            "test:stream:maxlen", {"seq": str(i)}, maxlen=3, approximate=False
+        )
+    entries = redis_adapter.xrange("test:stream:maxlen", "-", "+", count=100)
+    assert [f["seq"] for _mid, f in entries] == ["5", "6", "7"]
+
+
+def test_xtrim_minid(redis_adapter):
+    """xtrim_minid should remove entries below the threshold ID."""
+    redis_adapter.xadd("test:stream:xtrim", {"seq": "1"})
+    redis_adapter.xadd("test:stream:xtrim", {"seq": "2"})
+    id3 = redis_adapter.xadd("test:stream:xtrim", {"seq": "3"})
+    # Exact trimming (see test_xadd_with_maxlen: '~' is a no-op on tiny streams).
+    trimmed = redis_adapter.xtrim_minid("test:stream:xtrim", id3, approximate=False)
+    assert trimmed == 2
+    remaining = redis_adapter.xrange("test:stream:xtrim", "-", "+")
+    assert [mid for mid, _f in remaining] == [id3]
+
+
+def test_trim_primitives_default_to_approximate():
+    """xadd/xtrim_minid default to '~' trimming; plain xadd stays untrimmed."""
+    from unittest.mock import MagicMock
+
+    from gpmq.config import GPMQConfig
+    from gpmq.storage.redis_adapter import RedisAdapter
+
+    adapter = RedisAdapter(GPMQConfig())
+    client = MagicMock()
+    client.xadd.return_value = "1-0"
+    client.xtrim.return_value = 0
+    adapter._client = client
+
+    adapter.xadd("s", {"k": "v"})
+    adapter.xadd("s", {"k": "v"}, maxlen=5)
+    adapter.xtrim_minid("s", "10-0")
+
+    first, second = client.xadd.call_args_list
+    assert first.kwargs == {"maxlen": None, "approximate": True}
+    assert second.kwargs == {"maxlen": 5, "approximate": True}
+    client.xtrim.assert_called_once_with("s", minid="10-0", approximate=True)
+
+
+def test_stream_id_key_compares_numerically():
+    """Stream IDs must order numerically, not lexicographically."""
+    from gpmq.storage.redis_adapter import _stream_id_key
+
+    assert _stream_id_key("1678901234567-12") == (1678901234567, 12)
+    assert _stream_id_key("999-0") < _stream_id_key("1000-0")
+    assert _stream_id_key("5-2") < _stream_id_key("5-10")
+
+
+def test_xinfo_groups_and_xpending(redis_adapter):
+    """xinfo_groups/xpending should expose group progress and PEL summary."""
+    redis_adapter.xadd("test:stream:xinfo", {"seq": "1"})
+    redis_adapter.xgroup_create("test:stream:xinfo", "g_info")
+    groups = redis_adapter.xinfo_groups("test:stream:xinfo")
+    assert [g["name"] for g in groups] == ["g_info"]
+    assert groups[0]["pending"] == 0
+    summary = redis_adapter.xpending("test:stream:xinfo", "g_info")
+    assert summary["pending"] == 0
+    assert summary["min"] is None
+
+
+def test_get_registered_subscribers(redis_adapter):
+    """get_registered_subscribers should list registry set members."""
+    from gpmq.storage.redis_adapter import RedisAdapter  # noqa: F401
+
+    assert "trim_reg_test" not in redis_adapter.get_registered_subscribers()
+    redis_adapter.register_subscriber(
+        "trim_reg_test", {"message_types": ["t"], "stream_name": "test:stream"}
+    )
+    try:
+        assert "trim_reg_test" in redis_adapter.get_registered_subscribers()
+    finally:
+        redis_adapter.unregister_subscriber("trim_reg_test")

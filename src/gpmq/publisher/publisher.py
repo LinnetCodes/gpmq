@@ -2,14 +2,20 @@
 
 import json
 import uuid
-from typing import Optional
+from typing import Any, Optional
 
 from gpmq.config import GPMQConfig
 from gpmq.exceptions import InvalidTargetSubscriberError
+from gpmq.log import get_logger
 from gpmq.models.message import Message
 from gpmq.publisher.result_handler import ResultHandler
 from gpmq.storage.audit_store import AuditStore
 from gpmq.storage.redis_adapter import RedisAdapter
+
+# Resolved in Publisher.__init__: an import-time get_logger() would consume
+# gpmq.log's once-per-process config lookup before any config manager is set.
+# gpclog does not ship py.typed yet (PEP 561), so its logger type is Any.
+logger: Any = None
 
 
 class Publisher:
@@ -47,6 +53,9 @@ class Publisher:
         self._audit = audit_store
         self._config = config
 
+        global logger
+        logger = get_logger(getattr(config, "log_category", "gpmq"))
+
     def publish_message(self, message: Message) -> tuple[str, ResultHandler]:
         """Publish message to Redis Stream.
 
@@ -68,6 +77,34 @@ class Publisher:
         else:
             relevant_subs = self._get_matching_subscribers(message.type)
 
+        # Publisher-side retention gate (registration-based): skip the xadd
+        # entirely when no REGISTERED subscriber declares this message type.
+        # Registered-but-offline subscribers still count, preserving the
+        # crash-recovery catch-up semantics.
+        if (
+            not message.target_subscribers
+            and self._config.publish_require_subscriber
+            and not relevant_subs
+            and not self._registered_subscribers_handle(message.type)
+        ):
+            logger.info(
+                "Skipping publish of type '{}': publish_require_subscriber "
+                "is enabled and no registered subscriber handles it",
+                message.type,
+            )
+            # Empty expected-set: wait() returns {} immediately, matching the
+            # existing "no subscriber" fast path.
+            return (
+                "",
+                ResultHandler(
+                    reply_token="",
+                    subscriber_names=[],
+                    redis_adapter=self._redis,
+                    key_prefix=self._config.registry_key_prefix,
+                    audit_store=self._audit,
+                ),
+            )
+
         # Subscribe to the result channels BEFORE the message exists for
         # workers: the token is generated here and travels in the envelope,
         # so the channel identity is known ahead of the xadd.
@@ -83,7 +120,12 @@ class Publisher:
         # Publish to stream
         message.reply_token = reply_token
         fields = self._message_to_fields(message)
-        message_id = self._redis.xadd(self._config.stream_name, fields)
+        message_id = self._redis.xadd(
+            self._config.stream_name,
+            fields,
+            maxlen=self._idle_trim_maxlen(),
+            approximate=False,
+        )
 
         # Update message with actual Redis-generated ID
         message.id = message_id
@@ -97,7 +139,7 @@ class Publisher:
 
         return (message_id, handler)
 
-    def send_message(self, message: Message) -> str:
+    def send_message(self, message: Message) -> Optional[str]:
         """Fire-and-forget publish: send message without collecting results.
 
         Publishes message to Redis Stream and records audit log,
@@ -107,14 +149,31 @@ class Publisher:
             message: Message to publish (id field will be updated with Redis ID)
 
         Returns:
-            Redis-generated message ID
+            Redis-generated message ID, or None when the message was skipped
+            (publish_require_subscriber enabled and no registered subscriber
+            handles its type)
         """
         if message.target_subscribers:
             self._validate_target_subscribers(message.type, message.target_subscribers)
+        elif (
+            self._config.publish_require_subscriber
+            and not self._registered_subscribers_handle(message.type)
+        ):
+            logger.info(
+                "Skipping send of type '{}': publish_require_subscriber is "
+                "enabled and no registered subscriber handles it",
+                message.type,
+            )
+            return None
 
         # Publish to stream
         fields = self._message_to_fields(message)
-        message_id = self._redis.xadd(self._config.stream_name, fields)
+        message_id = self._redis.xadd(
+            self._config.stream_name,
+            fields,
+            maxlen=self._idle_trim_maxlen(),
+            approximate=False,
+        )
 
         # Update message with actual Redis-generated ID
         message.id = message_id
@@ -176,6 +235,38 @@ class Publisher:
                 failures.append((name, "does not handle message type"))
         if failures:
             raise InvalidTargetSubscriberError(message_type, failures)
+
+    def _registered_subscribers_handle(self, message_type: str) -> bool:
+        """Check whether any registered subscriber declares *message_type*.
+
+        Registration-based (not liveness-based): a registered-but-offline
+        subscriber counts, so its crash-recovery catch-up window is
+        preserved.
+
+        Args:
+            message_type: Message type to match against declared types
+
+        Returns:
+            True if at least one registered subscriber declares the type
+        """
+        for name in self._redis.get_registered_subscribers():
+            info = self._redis.get_subscriber_info(name)
+            if info and message_type in info.get("message_types", []):
+                return True
+        return False
+
+    def _idle_trim_maxlen(self) -> int | None:
+        """Resolve the XADD MAXLEN cap for the empty-registry window.
+
+        Returns:
+            Configured cap when the registry is empty, else None
+        """
+        cap = self._config.stream_trim_idle_maxlen
+        if cap is None:
+            return None
+        if self._redis.get_registered_subscribers():
+            return None
+        return cap
 
     @staticmethod
     def _message_to_fields(message: Message) -> dict[str, str]:
