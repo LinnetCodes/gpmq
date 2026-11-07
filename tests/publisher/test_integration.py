@@ -237,6 +237,7 @@ class TestConcurrentPublishZeroLoss:
     the worker had processed and ACKed everything.
     """
 
+    @pytest.mark.slow
     def test_24_way_concurrent_publish_all_results_collected(
         self, redis_adapter
     ):

@@ -10,6 +10,8 @@ import threading
 import time
 from datetime import datetime, timezone
 
+import pytest
+
 from gpmq.models.message import Message
 from gpmq.models.result import ProcessResult, ProcessStatus
 from gpmq.storage.audit_store import AuditStore
@@ -22,6 +24,7 @@ from multiprocessing import Event
 class TestWorkerMessageProcessing:
     """Integration test: Worker processes a message from Redis stream."""
 
+    @pytest.mark.slow
     def test_worker_processes_message_end_to_end(
         self, redis_adapter: RedisAdapter, audit_store: AuditStore, tmp_path
     ):
@@ -377,6 +380,7 @@ class TestWorkerContextFinalizerE2E:
     graceful stop (real spawn, real Redis, full run() -> finally -> _cleanup()
     chain — unlike the unit tests, which call _cleanup() directly)."""
 
+    @pytest.mark.slow
     def test_spawned_worker_runs_finalizer_on_graceful_stop(
         self, redis_adapter: RedisAdapter, tmp_path
     ):

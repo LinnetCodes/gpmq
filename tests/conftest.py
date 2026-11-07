@@ -87,3 +87,41 @@ def publisher_config() -> PublisherConfig:
         stream_name="test:gpmq:messages",
         registry_key_prefix="gpmq:",
     )
+
+
+def pytest_configure(config):
+    """Register the slow-test marker."""
+    config.addinivalue_line(
+        "markers",
+        "slow: slow tests (retry/backoff exhaustion, real worker spawn, "
+        "concurrent publish fan-out, XREADGROUP block cadence); skipped "
+        "unless --runslow is given",
+    )
+
+
+def pytest_addoption(parser):
+    parser.addoption(
+        "--runslow",
+        action="store_true",
+        default=False,
+        help="run tests marked @pytest.mark.slow (skipped by default)",
+    )
+
+
+def pytest_collection_modifyitems(config, items):
+    """Skip slow tests by default; --runslow includes them.
+
+    The slow group (6 tests, ~3.5 min, 96% of suite wall time) only needs
+    to run for full-package acceptance, or during development when the
+    change touches the code paths those tests cover (RedisAdapter
+    retry/connection, worker spawn/lifecycle, concurrent publish,
+    XREADGROUP blocking).
+    """
+    if config.getoption("--runslow"):
+        return
+    skip_slow = pytest.mark.skip(
+        reason="slow test group; run with --runslow (full acceptance)"
+    )
+    for item in items:
+        if "slow" in item.keywords:
+            item.add_marker(skip_slow)

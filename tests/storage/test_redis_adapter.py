@@ -15,6 +15,7 @@ def test_redis_adapter_connect(redis_config):
     adapter.disconnect()
 
 
+@pytest.mark.slow
 def test_retry_on_connection_error(redis_config):
     """Retry logic should attempt multiple times on connection error."""
     from gpmq.storage.redis_adapter import RedisAdapter
@@ -267,6 +268,7 @@ def test_disconnect_clears_connection(redis_adapter):
     assert redis_adapter.ping() is False
 
 
+@pytest.mark.slow
 def test_retry_exponential_backoff(redis_config):
     """Retry should use exponential backoff."""
     from gpmq.storage.redis_adapter import RedisAdapter
@@ -433,6 +435,7 @@ def test_connect_socket_timeout_default_is_10(redis_config):
         adapter.disconnect()
 
 
+@pytest.mark.slow
 def test_idle_xreadgroup_returns_at_block_cadence(redis_adapter):
     """Idle XREADGROUP(block_ms=5000) must return at ~5s, not 10s+.
 
