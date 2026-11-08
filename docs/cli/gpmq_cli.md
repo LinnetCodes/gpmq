@@ -79,7 +79,7 @@ gpmq audit query COMPONENT_NAME [OPTIONS]
 |-------------------|----------|-------------|
 | `COMPONENT_NAME` | Yes | Publisher or Subscriber config path, e.g. `gpmq.subscribers.data_loader` or `gpmq.publisher.main` |
 | `--type` | No | Filter by message type |
-| `--status` | No | Filter by processing status: `success` / `failure` / `exception` / `timeout` |
+| `--status` | No | Filter by processing status: `success` / `failure` / `exception` / `timeout` / `abandoned` |
 | `--correlation-id` | No | Filter by correlation ID |
 | `--from` | No | Start time, ISO format, e.g. `2026-01-01T00:00:00` |
 | `--to` | No | End time, ISO format |

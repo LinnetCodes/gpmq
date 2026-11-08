@@ -10,6 +10,27 @@ from typing import Any
 from gpmq.models.message import Message
 from gpmq.models.result import ProcessResult, ProcessStatus
 
+# save_result priority ladder (0.11.0): a real result outranks any
+# placeholder; ABANDONED (written by the owning subscriber from a
+# confirmed PEL fact) outranks TIMEOUT (publisher-side speculation).
+# See dev_docs/specs/2026-11-08-pel-abandon-recovery-design.md §4.3.
+_REAL_STATUSES = {
+    ProcessStatus.SUCCESS.value,
+    ProcessStatus.FAILURE.value,
+    ProcessStatus.EXCEPTION.value,
+}
+_PLACEHOLDER_RANK: dict[str, int] = {
+    ProcessStatus.TIMEOUT.value: 1,
+    ProcessStatus.ABANDONED.value: 2,
+}
+
+
+def _status_rank(status: str) -> int:
+    """Ladder rank: 3 = real, 2 = ABANDONED, 1 = TIMEOUT, 0 = unknown."""
+    if status in _REAL_STATUSES:
+        return 3
+    return _PLACEHOLDER_RANK.get(status, 0)
+
 
 class AuditStore:
     """SQLite audit store for GPMQ messages and results.
@@ -155,12 +176,13 @@ class AuditStore:
         """Save processing result with status-priority semantics.
 
         Priority rules for an existing row with the same
-        (message_id, subscriber_name):
+        (message_id, subscriber_name) — ladder real > ABANDONED > TIMEOUT:
 
-        * existing = TIMEOUT, new = real (SUCCESS/FAILURE/EXCEPTION)
-          -> overwrite (real replaces the placeholder).
-        * existing = real, new = real -> raise (genuine collision).
-        * existing = real, new = TIMEOUT (late) -> silently ignore.
+        * new rank > existing rank -> overwrite (e.g. real over TIMEOUT,
+          real over ABANDONED, ABANDONED over TIMEOUT).
+        * new rank <= existing rank -> silently ignore (e.g. TIMEOUT/ABANDONED
+          after a real result; TIMEOUT after ABANDONED; duplicates).
+        * real vs real -> raise (genuine collision).
         * no existing row -> insert.
 
         Args:
@@ -180,32 +202,18 @@ class AuditStore:
                 (message_id, result.subscriber_name),
             ).fetchone()
             new_status = result.status.value
-            real_statuses = {
-                ProcessStatus.SUCCESS.value,
-                ProcessStatus.FAILURE.value,
-                ProcessStatus.EXCEPTION.value,
-            }
             if existing is not None:
                 existing_status = existing["status"]
-                if (
-                    existing_status == ProcessStatus.TIMEOUT.value
-                    and new_status in real_statuses
-                ):
-                    action = "overwrite"
-                elif existing_status in real_statuses and new_status in real_statuses:
+                if existing_status in _REAL_STATUSES and new_status in _REAL_STATUSES:
                     raise RuntimeError(
                         f"Conflicting real results for message_id={message_id!r}, "
                         f"subscriber={result.subscriber_name!r}: "
                         f"existing={existing_status!r}, new={new_status!r}"
                     )
-                elif (
-                    existing_status in real_statuses
-                    and new_status == ProcessStatus.TIMEOUT.value
-                ):
-                    # Late TIMEOUT after a real result already stored — ignore.
-                    return
+                if _status_rank(new_status) > _status_rank(existing_status):
+                    action = "overwrite"
                 else:
-                    # Any other combination (incl. TIMEOUT/TIMEOUT) — ignore.
+                    # Lower/equal tier never buries what is stored.
                     return
             else:
                 action = "insert"

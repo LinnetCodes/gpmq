@@ -246,7 +246,7 @@ def audit(ctx: click.Context) -> None:
     "--status",
     "status_filter",
     default=None,
-    help="Filter by processing status (success/failure/exception/timeout).",
+    help="Filter by processing status (success/failure/exception/timeout/abandoned).",
 )
 @click.option("--correlation-id", default=None, help="Filter by correlation ID.")
 @click.option("--from", "from_time", default=None, help="Start time (ISO format).")

@@ -774,6 +774,65 @@ class RedisAdapter:
 
         return self._retry_on_transient_errors(_xpending)
 
+    def xpending_range(
+        self,
+        stream: str,
+        group: str,
+        *,
+        min_id: str = "-",
+        max_id: str = "+",
+        count: int = 100,
+        consumer: str | None = None,
+        idle_ms: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """List per-entry pending (PEL) details, optionally idle-filtered.
+
+        Unlike :meth:`xpending` (a summary), this returns one dict per
+        pending entry. ``idle_ms`` (Redis >= 6.2) makes the server drop
+        entries delivered/claimed more recently than that many
+        milliseconds — the gpmq orphan-abandon sweep relies on it to see
+        only long-idle entries without client-side filtering.
+
+        Args:
+            stream: Stream name
+            group: Consumer group name
+            min_id: Minimum entry ID of the range ("-": from the smallest)
+            max_id: Maximum entry ID of the range ("+": to the greatest)
+            count: Maximum entries to return
+            consumer: Restrict to one consumer's PEL slice (None = whole group)
+            idle_ms: Only entries idle for at least this many milliseconds
+                (None = no idle filter)
+
+        Returns:
+            List of dicts with keys ``message_id``, ``consumer``,
+            ``time_since_delivered`` (ms) and ``times_delivered``. Entries
+            whose stream entry was trimmed away still appear (XPENDING
+            reads the group PEL, not the stream).
+
+        Raises:
+            RedisConnectionError: On connection failure after retries
+        """
+
+        def _xpending_range() -> list[dict[str, Any]]:
+            client = self._require_client()
+            # redis-py's kwarg is consumername; response entries are
+            # dict[str, Any] with decode_responses=True guaranteeing str
+            # keys/values at runtime.
+            return cast(
+                "list[dict[str, Any]]",
+                client.xpending_range(
+                    stream,
+                    group,
+                    min_id,
+                    max_id,
+                    count,
+                    consumername=consumer,
+                    idle=idle_ms,
+                ),
+            )
+
+        return self._retry_on_transient_errors(_xpending_range)
+
     def xclaim(
         self,
         stream: str,

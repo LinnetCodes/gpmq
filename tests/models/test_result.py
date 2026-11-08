@@ -182,3 +182,26 @@ class TestProcessResult:
         assert result.status == ProcessStatus.EXCEPTION
         assert result.error_message == "Something went wrong"
         assert result.error_traceback == "Stack trace here"
+
+
+def test_abandoned_status_value():
+    """ABANDONED (0.11.0): audit-only placeholder for orphaned PEL entries."""
+    from gpmq.models.result import ProcessStatus
+
+    assert ProcessStatus.ABANDONED.value == "abandoned"
+    assert ProcessStatus("abandoned") is ProcessStatus.ABANDONED
+
+
+def test_process_result_accepts_abandoned():
+    """ProcessResult round-trips the ABANDONED status."""
+    from gpmq.models.result import ProcessResult, ProcessStatus
+
+    result = ProcessResult(
+        message_id="5-0",
+        status=ProcessStatus.ABANDONED,
+        subscriber_name="sub",
+        processing_time=0.0,
+        error_message="abandoned: idle 60.0s in PEL",
+    )
+    assert result.status is ProcessStatus.ABANDONED
+    assert result.model_dump()["status"] == "abandoned"

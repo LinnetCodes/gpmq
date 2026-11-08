@@ -79,7 +79,7 @@ gpmq audit query COMPONENT_NAME [OPTIONS]
 |-------------|------|------|
 | `COMPONENT_NAME` | 是 | Publisher 或 Subscriber 配置路径，如 `gpmq.subscribers.data_loader` 或 `gpmq.publisher.main` |
 | `--type` | 否 | 按消息类型过滤 |
-| `--status` | 否 | 按处理状态过滤，可选值：`success` / `failure` / `exception` / `timeout` |
+| `--status` | 否 | 按处理状态过滤，可选值：`success` / `failure` / `exception` / `timeout` / `abandoned` |
 | `--correlation-id` | 否 | 按关联 ID 过滤 |
 | `--from` | 否 | 起始时间，ISO 格式，如 `2026-01-01T00:00:00` |
 | `--to` | 否 | 结束时间，ISO 格式 |

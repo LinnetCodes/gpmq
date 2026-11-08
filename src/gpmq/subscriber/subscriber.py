@@ -11,15 +11,18 @@ from typing import TYPE_CHECKING, Any
 
 from gpmq.exceptions import HandlerTypeMismatchError
 from gpmq.log import get_logger
+from gpmq.models.result import ProcessResult, ProcessStatus
 
 if TYPE_CHECKING:
     from gpmq.config import SubscriberConfig
+    from gpmq.storage.audit_store import AuditStore
     from gpmq.storage.redis_adapter import RedisAdapter
     from gpmq.subscriber.worker_manager import WorkerManager
 
 
-# gpclog does not ship py.typed yet (PEP 561), so its logger type resolves to
-# Any; annotate the module-global logger as Any until it does.
+# gpclog ships py.typed since 0.3.1; the module-global logger stays Any
+# because it is re-initialized per Subscriber instance (same pattern as
+# worker.py).
 logger: Any = None
 
 
@@ -44,6 +47,10 @@ class Subscriber:
         self._heartbeat_stop = threading.Event()
         self._running = False
         self._next_trim_at = 0.0  # stream-retention trim throttle (epoch)
+        self._audit: AuditStore | None = (
+            None  # lazy: opened on the first abandoned PEL entry, closed in stop()
+        )
+        self._audit_lock = threading.Lock()  # guards lazy _audit open/close
         self._worker_ctx: dict[str, Any] = (
             dict()
         )  # worker context data that will be passed to worker processes
@@ -140,6 +147,15 @@ class Subscriber:
             self._heartbeat_thread.join(timeout=10)
         self._heartbeat_thread = None
 
+        # Best-effort orphan sweep BEFORE the final trim: an abandoned
+        # (xack'd) entry no longer pins the safe point, so this can let the
+        # final trim actually advance. Independent of the trim flags —
+        # abandoning is its own mechanism, gated only by
+        # pel_abandon_idle_seconds and the adapter still being set. A down
+        # Redis pays one retry cycle inside the scan (swallowed there),
+        # exactly like the heartbeat write already does.
+        self._maybe_abandon_pending()
+
         # Final retention trim when this is the last registered subscriber.
         # Runs before unregistering so our own group's cursor/PEL still
         # constrains the safe trim point. Heartbeat join may have timed out
@@ -168,6 +184,18 @@ class Subscriber:
                     self.name,
                     traceback.format_exc(),
                 )
+
+        with self._audit_lock:
+            if self._audit is not None:
+                try:
+                    self._audit.close()
+                except Exception:
+                    logger.error(
+                        "Error closing subscriber audit store for {}\n{}",
+                        self.name,
+                        traceback.format_exc(),
+                    )
+                self._audit = None
 
         if self._redis:
             self._redis.unregister_subscriber(self.name)
@@ -281,6 +309,7 @@ class Subscriber:
                     self.name,
                     traceback.format_exc(),
                 )
+            self._maybe_abandon_pending()
             self._maybe_trim()
 
     def _maybe_trim(self) -> None:
@@ -306,3 +335,135 @@ class Subscriber:
                 self.name,
                 traceback.format_exc(),
             )
+
+    def _maybe_abandon_pending(self) -> None:
+        """Abandon orphaned PEL entries idle beyond the configured threshold.
+
+        A worker that dies between XREADGROUP and XACK leaves its entry in
+        the group's PEL forever: besides losing the message, the entry
+        pins the stream-retention safe point. Each heartbeat round, scan
+        the group's PEL (server-side idle filter) and abandon every
+        long-idle entry — see :meth:`_abandon_entry`. Nothing is ever
+        redelivered: "interrupted mid-processing" is a terminal failure
+        (at-most-once processing; see the design doc for the ruling).
+
+        Failures are logged and never propagated — recovery must not
+        jeopardize the heartbeat loop.
+        """
+        idle_seconds = self._config.pel_abandon_idle_seconds
+        if idle_seconds <= 0 or not self._redis:
+            return
+        try:
+            entries = self._redis.xpending_range(
+                self._config.stream_name,
+                self.name,
+                count=100,
+                idle_ms=int(idle_seconds * 1000),
+            )
+            for entry in entries:
+                self._abandon_entry(entry)
+        except Exception:
+            logger.error(
+                "Orphan PEL scan failed for {}\n{}",
+                self.name,
+                traceback.format_exc(),
+            )
+
+    def _abandon_entry(self, entry: dict[str, Any]) -> None:
+        """Abandon one idle PEL entry: audit ABANDONED, XACK, warn.
+
+        Per-entry order is audit-then-xack: unblocking the trim point
+        outranks observability, so an audit failure is logged but the
+        XACK still runs. Both steps are idempotent on re-sweep (the
+        audit ladder ignores ABANDONED-over-ABANDONED; XACK on a cleared
+        entry is a no-op).
+
+        Args:
+            entry: One ``xpending_range`` dict (message_id, consumer,
+                time_since_delivered ms, times_delivered).
+        """
+        redis = self._redis
+        assert redis is not None  # caller (_maybe_abandon_pending) guards this
+        message_id = entry["message_id"]
+        idle_s = entry.get("time_since_delivered", 0) / 1000.0
+
+        # Log-only detail read; the fields may already be gone (manual
+        # trim) — the abandon itself must not depend on it.
+        detail = ""
+        try:
+            rows = redis.xrange(
+                self._config.stream_name, start=message_id, end=message_id
+            )
+            if rows:
+                fields = rows[0][1]
+                detail = (
+                    f", type={fields.get('type', '?')}, "
+                    f"publisher={fields.get('publisher', '?')}"
+                )
+        except Exception:
+            logger.error(
+                "Failed to read fields of pending entry {} for abandon log\n{}",
+                message_id,
+                traceback.format_exc(),
+            )
+
+        process_result = ProcessResult(
+            message_id=message_id,
+            status=ProcessStatus.ABANDONED,
+            subscriber_name=self.name,
+            processing_time=0.0,
+            error_message=(
+                f"abandoned: idle {idle_s:.1f}s in PEL "
+                f"(consumer={entry.get('consumer', '?')}, "
+                f"deliveries={entry.get('times_delivered', '?')})"
+            ),
+        )
+        try:
+            if self._config.enable_audit:
+                self._get_audit().save_result(message_id, process_result)
+        except Exception:
+            logger.error(
+                "Failed to audit ABANDONED result for {} (xack still runs)\n{}",
+                message_id,
+                traceback.format_exc(),
+            )
+
+        redis.xack(self._config.stream_name, self.name, message_id)
+        logger.warning(
+            "Abandoned orphan PEL entry {} of {} (idle {:.1f}s, "
+            "deliveries {}){} — processing was interrupted, not redelivered",
+            message_id,
+            self.name,
+            idle_s,
+            entry.get("times_delivered", "?"),
+            detail,
+        )
+
+    def _get_audit(self) -> "AuditStore":
+        """Return the subscriber-process audit store, connecting lazily.
+
+        Opened on the first abandoned entry (not on start) so healthy
+        operation costs nothing; closed in :meth:`stop`. Cached only after
+        a successful connect: a failed connect is retried (and logged by
+        the caller) on the next abandoned entry, instead of caching a dead
+        store whose ``save_result`` would silently no-op from then on.
+        The lazy open/close is guarded by ``_audit_lock``, so the stop-path
+        sweep and an un-joined heartbeat thread cannot open two stores.
+
+        Returns:
+            The connected :class:`AuditStore` for this process.
+
+        Raises:
+            Whatever :meth:`AuditStore.connect` raises (expectedly
+                ``sqlite3.Error``); nothing is cached and the per-entry
+                caller logs the error and continues.
+        """
+        if self._audit is None:
+            with self._audit_lock:
+                if self._audit is None:
+                    from gpmq.storage.audit_store import AuditStore
+
+                    store = AuditStore(self._config.audit_db_path)
+                    store.connect()
+                    self._audit = store
+        return self._audit

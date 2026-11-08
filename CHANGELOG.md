@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.11.1] - 2026-11-08
+
+### Added
+
+- **Orphan PEL recovery: pending entries left by workers that died
+  mid-processing are now explicitly abandoned instead of stuck forever.**
+  Each subscriber's heartbeat thread scans its consumer group's PEL for
+  entries idle beyond `pel_abandon_idle_seconds` (default 60s; `0`
+  disables) and abandons each one: `XACK` out of the PEL, an `abandoned`
+  placeholder result in the audit store, and a warning log. This also
+  un-pins the stream-retention safe point (0.10.0's trimming silently
+  degraded to a no-op behind such an orphan). Nothing is ever
+  redelivered — "interrupted mid-processing" is a terminal failure
+  (at-most-once processing): handlers observe no new states and RPC
+  callers still only see their own `TIMEOUT`. New `ProcessStatus.ABANDONED`
+  (placeholder tier in the audit priority ladder: overwritten by a late
+  real result, outranks a `TIMEOUT` placeholder), queryable via
+  `gpmq audit query --status abandoned`; new `RedisAdapter.xpending_range`.
+  `worker.py` and the publisher side are untouched (no interface change;
+  wire protocol identical). Requires Redis >= 6.2 (the sweep's
+  `XPENDING ... IDLE` filter); on older servers set
+  `pel_abandon_idle_seconds: 0`.
+
+### Changed
+
+- Dependency floors now require `gpconfig >= 0.6.0` and `gpclog >= 0.3.1`
+  — their first releases shipping `py.typed` (PEP 561). The transitional
+  mypy override for untyped `gpclog` is removed; the tree stays
+  `mypy --strict` clean against fully typed dependencies.
+
 ## [0.10.0] - 2026-11-07
 
 ### Added

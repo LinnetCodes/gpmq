@@ -880,3 +880,26 @@ class TestStreamRetentionConfig:
         """idle maxlen below 1 must be rejected."""
         with pytest.raises(Exception):  # Pydantic ValidationError
             GPMQConfig(stream_trim_idle_maxlen=0)
+
+
+class TestPelAbandonIdleSeconds:
+    """Orphan PEL recovery threshold (0.11.0)."""
+
+    def test_default_is_60_seconds(self):
+        assert GPMQConfig().pel_abandon_idle_seconds == 60.0
+
+    def test_zero_disables_recovery(self):
+        assert GPMQConfig(pel_abandon_idle_seconds=0.0).pel_abandon_idle_seconds == 0.0
+
+    def test_negative_rejected(self):
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            GPMQConfig(pel_abandon_idle_seconds=-1.0)
+
+    def test_subscriber_config_inherits_field(self):
+        config = SubscriberConfig(
+            name="s",
+            handlers=[HandlerConfig(message_types=["t"], handler="m.f")],
+        )
+        assert config.pel_abandon_idle_seconds == 60.0

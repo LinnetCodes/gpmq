@@ -615,8 +615,9 @@ results = batch.get_all_result()
 | `stream_trim_on_last_stop` | `true` | 最后一个已注册的订阅者停止时执行一次最终裁剪。 |
 | `stream_trim_idle_maxlen` | `None` | 注册表为空期间，发布者通过 `XADD MAXLEN N` 为 Stream 施加条目数上限。`None` = 不设上限。 |
 | `publish_require_subscriber` | `false` | 没有**已注册**订阅者声明该消息类型时，直接跳过发布（不写入 Stream）。已注册但离线的订阅者仍会收到消息，因此崩溃后仍能补上离线期间的消息。 |
+| `pel_abandon_idle_seconds` | `60.0` | PEL 条目闲置多少秒后被订阅者心跳扫描放弃（XACK 清出 PEL + `abandoned` 审计记录；绝不重投）。`0` 关闭孤儿回收。应显著大于最长 handler 执行时长；RPC 调用方的 timeout 建议显著小于该值（仅为尽早失败——调用方始终只会看到自己的 `TIMEOUT`）。需要 Redis >= 6.2（IDLE 过滤）；旧版服务器请设为 `0`。 |
 
-**注意** — 若某个 Worker 在处理中途死亡，其 pending 条目永远不会被回收（gpmq 目前没有自动认领机制），且会永久卡住安全点——此后裁剪退化为空操作（内存表现与不裁剪时一致），直到手动清除该条目或注销该订阅者。
+**孤儿 pending 条目** — Worker 在处理中途死亡会将其条目留在消费组的 PEL 中。心跳扫描会将闲置超过 `pel_abandon_idle_seconds` 的条目放弃：XACK 清出 PEL、在审计库记为 `abandoned` 结果，且不再卡住保留策略的安全点。绝不重投——中断即终局失败（至多一次处理）：handler 不会观察到任何新状态，RPC 调用方仍然只会看到自己的 `TIMEOUT`。执行缓慢但活着的 handler 即便条目被提前放弃也无害：它随后写入的真结果会在审计库中覆盖 `abandoned` 占位。
 
 ---
 
@@ -849,6 +850,7 @@ class ProcessStatus(str, Enum):
     FAILURE = "failure"
     EXCEPTION = "exception"
     TIMEOUT = "timeout"
+    ABANDONED = "abandoned"
 
 class ProcessResult(BaseModel):
     message_id: str
@@ -871,6 +873,7 @@ class ProcessResult(BaseModel):
 | `FAILURE` | 处理器显式返回 `ProcessStatus.FAILURE`（规约定义的失败状态，非异常） |
 | `EXCEPTION` | 处理过程中抛出了异常 |
 | `TIMEOUT` | 处理超时，Worker 被强制终止 |
+| `ABANDONED` | 条目被从 PEL 中放弃：闲置超过 `pel_abandon_idle_seconds`，处理被中断（推定 worker 死亡）。仅用于审计的占位状态——不会投递给调用方 |
 
 **ProcessResult 字段**
 

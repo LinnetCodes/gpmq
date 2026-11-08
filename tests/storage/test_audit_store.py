@@ -913,3 +913,94 @@ class TestAuditStoreLazyConnect:
         assert store.cleanup_by_time(datetime.now(timezone.utc)) == 0
         assert store.cleanup_by_type("test") == 0
         store.close()
+
+
+# ------------------------------------------------------------------
+# ABANDONED placeholder tier (0.11.0): real > ABANDONED > TIMEOUT
+# ------------------------------------------------------------------
+
+
+def _result(message_id: str, status, processing_time: float = 0.1, **kw):
+    from gpmq.models.result import ProcessResult
+
+    return ProcessResult(
+        message_id=message_id,
+        status=status,
+        subscriber_name="sub",
+        processing_time=processing_time,
+        **kw,
+    )
+
+
+def test_save_result_abandoned_overwrites_timeout(audit_store):
+    """ABANDONED (owning-subscriber fact) outranks TIMEOUT (caller-side guess)."""
+    from gpmq.models.result import ProcessStatus
+
+    audit_store.save_result(
+        "p5", _result("p5", ProcessStatus.TIMEOUT, timeout_seconds=5.0)
+    )
+    audit_store.save_result("p5", _result("p5", ProcessStatus.ABANDONED))
+
+    assert [
+        r["status"] for r in audit_store.query_by_status(ProcessStatus.ABANDONED)
+    ] == ["abandoned"]
+    assert [
+        r["status"] for r in audit_store.query_by_status(ProcessStatus.TIMEOUT)
+    ] == []
+
+
+def test_save_result_real_overwrites_abandoned(audit_store):
+    """False-positive abandon: the slow worker's late real result wins."""
+    from gpmq.models.result import ProcessStatus
+
+    audit_store.save_result("p6", _result("p6", ProcessStatus.ABANDONED))
+    audit_store.save_result("p6", _result("p6", ProcessStatus.SUCCESS))
+
+    assert [
+        r["status"] for r in audit_store.query_by_status(ProcessStatus.SUCCESS)
+    ] == ["success"]
+    assert [
+        r["status"] for r in audit_store.query_by_status(ProcessStatus.ABANDONED)
+    ] == []
+
+
+def test_save_result_abandoned_after_real_is_ignored(audit_store):
+    """Worker saved its result, died before XACK; the later sweep must not bury it."""
+    from gpmq.models.result import ProcessStatus
+
+    audit_store.save_result("p7", _result("p7", ProcessStatus.SUCCESS))
+    audit_store.save_result("p7", _result("p7", ProcessStatus.ABANDONED))
+
+    assert [
+        r["status"] for r in audit_store.query_by_status(ProcessStatus.SUCCESS)
+    ] == ["success"]
+    stats = audit_store.stats()
+    assert stats["total_results"] == 1  # no duplicate row
+
+
+def test_save_result_timeout_after_abandoned_is_ignored(audit_store):
+    """A late caller-side TIMEOUT must not bury the truthful ABANDONED record."""
+    from gpmq.models.result import ProcessStatus
+
+    audit_store.save_result("p8", _result("p8", ProcessStatus.ABANDONED))
+    audit_store.save_result(
+        "p8", _result("p8", ProcessStatus.TIMEOUT, timeout_seconds=5.0)
+    )
+
+    assert [
+        r["status"] for r in audit_store.query_by_status(ProcessStatus.ABANDONED)
+    ] == ["abandoned"]
+    assert [
+        r["status"] for r in audit_store.query_by_status(ProcessStatus.TIMEOUT)
+    ] == []
+
+
+def test_save_result_abandoned_after_abandoned_is_ignored(audit_store):
+    """Re-sweep of a not-yet-xack'd entry is idempotent (single row)."""
+    from gpmq.models.result import ProcessStatus
+
+    audit_store.save_result("p9", _result("p9", ProcessStatus.ABANDONED))
+    audit_store.save_result("p9", _result("p9", ProcessStatus.ABANDONED))
+
+    stats = audit_store.stats()
+    assert stats["total_results"] == 1

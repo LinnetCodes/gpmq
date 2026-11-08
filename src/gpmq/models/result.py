@@ -13,6 +13,9 @@ class ProcessStatus(str, Enum):
     FAILURE = "failure"  # Business logic returned failure (not exception)
     EXCEPTION = "exception"  # Exception occurred during processing
     TIMEOUT = "timeout"  # Processing timed out, worker killed
+    ABANDONED = "abandoned"  # Entry abandoned from PEL: idle beyond
+    #                          pel_abandon_idle_seconds, processing
+    #                          interrupted (worker death assumed)
 
 
 class ProcessResult(BaseModel):

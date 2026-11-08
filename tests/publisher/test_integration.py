@@ -238,9 +238,7 @@ class TestConcurrentPublishZeroLoss:
     """
 
     @pytest.mark.slow
-    def test_24_way_concurrent_publish_all_results_collected(
-        self, redis_adapter
-    ):
+    def test_24_way_concurrent_publish_all_results_collected(self, redis_adapter):
         """Every one of 24 concurrent publishes must get its SUCCESS result."""
         import threading
         from concurrent.futures import ThreadPoolExecutor

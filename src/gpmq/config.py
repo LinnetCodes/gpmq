@@ -57,6 +57,8 @@ class GPMQConfig(GPConfig):
             only while the registry is empty (None = unbounded)
         publish_require_subscriber: Skip publishing when no REGISTERED
             subscriber declares the message type
+        pel_abandon_idle_seconds: Seconds a PEL entry must stay idle before
+            the subscriber's heartbeat scan abandons it (0 disables)
         audit_db_path: Path to SQLite audit database
         enable_audit: Enable or disable audit store
         log_category: Log category for gpclog
@@ -145,6 +147,20 @@ class GPMQConfig(GPConfig):
         description=(
             "Skip publishing when no REGISTERED subscriber declares the "
             "message type (registration-based, preserves crash catch-up)"
+        ),
+    )
+
+    # Orphan PEL recovery — semantics documented in docs/api "Stream
+    # retention" (Orphaned pending entries) and CHANGELOG 0.11.1.
+    pel_abandon_idle_seconds: float = Field(
+        default=60.0,
+        ge=0,
+        description=(
+            "Seconds a pending (PEL) entry must stay idle before the "
+            "subscriber's heartbeat scan abandons it (XACK out of the PEL + "
+            "ABANDONED audit record; never redelivered); 0 disables orphan "
+            "recovery. Keep comfortably above the longest handler runtime; "
+            "RPC caller timeouts should stay well below it"
         ),
     )
 

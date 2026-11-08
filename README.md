@@ -19,7 +19,7 @@
 ## Requirements
 
 - Python >= 3.10
-- Redis >= 5.0
+- Redis >= 6.2 (the orphan PEL sweep's idle filter needs 6.2; set `pel_abandon_idle_seconds: 0` on older servers)
 
 ## Installation
 

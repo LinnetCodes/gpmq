@@ -151,20 +151,16 @@ class TestPublisherPublishMessage:
         calls: list[str] = []
         mock_redis.get_active_subscribers.return_value = ["sub-a"]
         mock_redis.get_subscriber_info.return_value = {"message_types": ["test_type"]}
-        mock_redis.subscribe.side_effect = (
-            lambda channels: calls.append("subscribe")
-        )
-        mock_redis.xadd.side_effect = (
-            lambda *a, **k: calls.append("xadd") or "1234567890-0"
+        mock_redis.subscribe.side_effect = lambda channels: calls.append("subscribe")
+        mock_redis.xadd.side_effect = lambda *a, **k: (
+            calls.append("xadd") or "1234567890-0"
         )
 
         publisher.publish_message(_make_message())
 
         assert calls == ["subscribe", "xadd"]
 
-    def test_envelope_reply_token_matches_subscription(
-        self, publisher, mock_redis
-    ):
+    def test_envelope_reply_token_matches_subscription(self, publisher, mock_redis):
         """xadd fields must carry the same reply_token the handler subscribed to."""
         mock_redis.get_active_subscribers.return_value = ["sub-a"]
         mock_redis.get_subscriber_info.return_value = {"message_types": ["test_type"]}

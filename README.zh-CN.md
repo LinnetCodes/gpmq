@@ -19,7 +19,7 @@
 ## 环境要求
 
 - Python >= 3.10
-- Redis >= 5.0
+- Redis >= 6.2（孤儿 PEL 扫尾的 IDLE 过滤需要 6.2；更旧的服务器请将 `pel_abandon_idle_seconds` 设为 `0`）
 
 ## 安装
 

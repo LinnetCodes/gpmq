@@ -511,9 +511,7 @@ class TestSubscribeAckConfirmation:
         adapter, pubsub = self._make_adapter()
         pubsub.get_message.return_value = None
 
-        with patch(
-            "gpmq.storage.redis_adapter._SUBSCRIBE_ACK_TIMEOUT_SECONDS", 0.05
-        ):
+        with patch("gpmq.storage.redis_adapter._SUBSCRIBE_ACK_TIMEOUT_SECONDS", 0.05):
             with pytest.raises(RedisConnectionError):
                 adapter.subscribe(["ch-a"])
 
@@ -599,3 +597,67 @@ def test_get_registered_subscribers(redis_adapter):
         assert "trim_reg_test" in redis_adapter.get_registered_subscribers()
     finally:
         redis_adapter.unregister_subscriber("trim_reg_test")
+
+
+def test_xpending_range_filters_by_idle(redis_adapter):
+    """xpending_range returns per-entry PEL detail; idle_ms filters server-side."""
+    redis_adapter.xgroup_destroy("test:pending:range", "test_group")
+    redis_adapter.clear_stream("test:pending:range")
+
+    redis_adapter.xgroup_create("test:pending:range", "test_group", id="0")
+    msg_id = redis_adapter.xadd("test:pending:range", {"type": "test"})
+    redis_adapter.xreadgroup(
+        "test_group",
+        "consumer1",
+        {"test:pending:range": ">"},
+        count=1,
+    )
+
+    # No idle floor: the just-delivered entry comes back with full detail.
+    entries = redis_adapter.xpending_range(
+        "test:pending:range", "test_group", idle_ms=0
+    )
+    assert len(entries) == 1
+    assert entries[0]["message_id"] == msg_id
+    assert entries[0]["consumer"] == "consumer1"
+    assert entries[0]["times_delivered"] == 1
+    assert entries[0]["time_since_delivered"] >= 0
+
+    # A far-future floor excludes the entry (delivered moments ago).
+    assert (
+        redis_adapter.xpending_range(
+            "test:pending:range", "test_group", idle_ms=600_000
+        )
+        == []
+    )
+
+    # Consumer filter scopes the listing to one consumer's PEL slice.
+    assert (
+        redis_adapter.xpending_range(
+            "test:pending:range", "test_group", idle_ms=0, consumer="other"
+        )
+        == []
+    )
+
+
+def test_xpending_range_without_idle_filter_returns_all(redis_adapter):
+    """idle_ms=None omits the IDLE option entirely: no server-side filter.
+
+    The default path (no idle floor) is what a generic PEL inspection
+    would use; the sweep always passes an explicit idle_ms."""
+    redis_adapter.xgroup_destroy("test:pending:range", "test_group")
+    redis_adapter.clear_stream("test:pending:range")
+
+    redis_adapter.xgroup_create("test:pending:range", "test_group", id="0")
+    redis_adapter.xadd("test:pending:range", {"type": "test"})
+    redis_adapter.xreadgroup(
+        "test_group",
+        "consumer1",
+        {"test:pending:range": ">"},
+        count=1,
+    )
+
+    # Fresh entry returned — no idle floor applied (unlike idle_ms=600_000
+    # above, which excludes it).
+    entries = redis_adapter.xpending_range("test:pending:range", "test_group")
+    assert len(entries) == 1
