@@ -291,6 +291,121 @@ class TestWorkerMessageProcessing:
                 pass
 
 
+class TestWorkerResultJsonRoundTrip:
+    """Integration: RPC round trip with stdlib types in the handler return.
+
+    Regression for the 0.11.1 defect (quantas Q-07): a handler returning
+    date/datetime/Decimal crashed the worker on the serialization path —
+    audit json.dumps with audit on, result publish otherwise — leaving the
+    RPC caller waiting into TIMEOUT until manual restart.
+    """
+
+    def test_rpc_result_with_stdlib_types_round_trips(
+        self, redis_adapter: RedisAdapter, tmp_path
+    ):
+        """Caller receives a SUCCESS receipt whose data holds ISO/str values."""
+        from datetime import date
+        from decimal import Decimal
+
+        HandlerRegistry.clear()
+
+        @message_handler(message_types=["integ_json_type"])
+        def json_handler(msg: Message) -> dict:
+            return {
+                "trade_date": date(2026, 11, 6),
+                "up_to": datetime(2026, 11, 6, 10, 0, 6, tzinfo=timezone.utc),
+                "price": Decimal("10.00"),
+            }
+
+        HandlerRegistry.register(json_handler)
+
+        stream_name = "gpmq:messages"
+        group_name = "integ-json-sub"
+        db_path = str(tmp_path / "json_test.db")
+        reply_token = "integ-json-token"
+
+        try:
+            # Caller subscribes to the result channel BEFORE the xadd
+            # (I14 pre-xadd reply-token subscription pattern).
+            result_channel = f"gpmq:result:{reply_token}:{group_name}"
+            pubsub = redis_adapter.subscribe([result_channel])
+
+            redis_adapter.xgroup_create(stream_name, group_name)
+            redis_adapter.xadd(
+                stream_name,
+                {
+                    "type": "integ_json_type",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "publisher": "integ-test-pub",
+                    "payload": json.dumps({"test": "data"}),
+                    "reply_token": reply_token,
+                },
+            )
+
+            config_dict = {
+                "name": group_name,
+                "handlers": [
+                    {
+                        "message_types": ["integ_json_type"],
+                        "handler": "dummy.handler",
+                    }
+                ],
+                "stream_name": stream_name,
+                "redis_host": "127.0.0.1",
+                "redis_port": 6379,
+                "redis_password": "123456",
+                "redis_db": 15,
+                "heartbeat_interval": 300,
+                "audit_db_path": db_path,
+                "log_category": "gpmq",
+            }
+
+            test_audit = AuditStore(db_path)
+            test_audit.connect()
+
+            worker = Worker(
+                subscriber_name=group_name,
+                stream_name=stream_name,
+                message_types=["integ_json_type"],
+                worker_id=f"{group_name}-worker-0",
+                hostname="test-host",
+                config_dict=config_dict,
+            )
+            worker._redis = redis_adapter
+            worker._audit = test_audit
+
+            # Synchronous single batch: processes the message and publishes
+            # the result through the real adapter (real json.dumps on the wire).
+            worker._read_and_process()
+
+            msg = redis_adapter.get_message(pubsub, timeout=3.0)
+            assert msg is not None, "result never published — worker crashed?"
+            result = ProcessResult.model_validate(msg["data"])
+            assert result.status == ProcessStatus.SUCCESS
+            assert result.data == {
+                "trade_date": "2026-11-06",
+                "up_to": "2026-11-06T10:00:06Z",
+                "price": "10.00",
+            }
+
+            # The message reached a terminal outcome despite the exotic types
+            pending = redis_adapter.xpending(stream_name, group_name)
+            assert pending["count"] == 0
+
+            test_audit.close()
+        finally:
+            HandlerRegistry.clear()
+            try:
+                pubsub.close()
+            except Exception:
+                pass
+            try:
+                redis_adapter.clear_stream(stream_name)
+                redis_adapter.xgroup_destroy(stream_name, group_name)
+            except Exception:
+                pass
+
+
 class TestWorkerHeartbeatStatusFlush:
     """Integration: live-status fields ride the heartbeat into Redis (R-001)."""
 

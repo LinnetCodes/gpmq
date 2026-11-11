@@ -323,6 +323,140 @@ class TestWorkerProcessMessage:
         mock_redis.publish.assert_called_once()
 
 
+class TestWorkerResultSerialization:
+    """Handler-return JSON-safe serialization on the result publish path.
+
+    Regression for the 0.11.1 defect: a handler returning stdlib types
+    (date/datetime/Decimal/UUID) inside its dict crashed the worker at
+    serialization time (audit json.dumps / result publish) and left the
+    RPC caller waiting into TIMEOUT.
+    """
+
+    def _make_worker(self, mock_redis, mock_audit, message_types):
+        """Build a Worker wired with mock adapter/audit (unit-test setup)."""
+        from gpmq.config import SubscriberConfig
+        from gpmq.subscriber.worker import Worker
+
+        config = SubscriberConfig(
+            **_make_subscriber_config(message_types=message_types)
+        )
+        worker = Worker(
+            subscriber_name="test-subscriber",
+            stream_name="gpmq:messages",
+            message_types=message_types,
+            worker_id="test-subscriber-worker-0",
+            hostname="test-host",
+            config_dict=config.model_dump(),
+        )
+        worker._redis = mock_redis
+        worker._audit = mock_audit
+        return worker
+
+    def test_stdlib_types_in_return_converted_to_json_native(self):
+        """date/datetime/Decimal/UUID in the return dict reach the wire as ISO/str."""
+        from datetime import date
+        from decimal import Decimal
+        from uuid import UUID
+
+        mock_redis = MagicMock()
+        mock_audit = MagicMock()
+        mock_handler = MagicMock(
+            return_value={
+                "trade_date": date(2026, 11, 6),
+                "up_to": datetime(2026, 11, 6, 10, 0, 6, tzinfo=timezone.utc),
+                "price": Decimal("10.00"),
+                "ref": UUID("12345678-1234-5678-1234-567812345678"),
+            }
+        )
+        worker = self._make_worker(mock_redis, mock_audit, ["type_json"])
+
+        msg_id, fields = _make_stream_message(msg_id="msg-json", msg_type="type_json")
+        worker._process_message(msg_id, fields, mock_handler)
+
+        # The payload handed to the adapter must itself be JSON-serializable
+        published = mock_redis.publish.call_args[0][1]
+        json.dumps(published)
+        assert published["data"] == {
+            "trade_date": "2026-11-06",
+            "up_to": "2026-11-06T10:00:06Z",
+            "price": "10.00",
+            "ref": "12345678-1234-5678-1234-567812345678",
+        }
+        # The audited result carries the same normalized data
+        saved_result = mock_audit.save_result.call_args[0][1]
+        assert saved_result.status == ProcessStatus.SUCCESS
+        assert saved_result.data["trade_date"] == "2026-11-06"
+
+    def test_bare_stdlib_return_value_wrapped_and_converted(self):
+        """A bare non-dict stdlib return (e.g. date) is wrapped and converted."""
+        from datetime import date
+
+        mock_redis = MagicMock()
+        mock_audit = MagicMock()
+        mock_handler = MagicMock(return_value=date(2026, 11, 6))
+        worker = self._make_worker(mock_redis, mock_audit, ["type_bare"])
+
+        msg_id, fields = _make_stream_message(msg_id="msg-bare", msg_type="type_bare")
+        worker._process_message(msg_id, fields, mock_handler)
+
+        published = mock_redis.publish.call_args[0][1]
+        assert published["status"] == "success"
+        assert published["data"] == {"value": "2026-11-06"}
+
+    def test_unserializable_return_becomes_exception_receipt(self):
+        """Unknown object types yield an EXCEPTION receipt; worker survives."""
+
+        class Opaque:
+            pass
+
+        mock_redis = MagicMock()
+        mock_audit = MagicMock()
+        mock_handler = MagicMock(return_value={"obj": Opaque()})
+        worker = self._make_worker(mock_redis, mock_audit, ["type_opaque"])
+
+        msg_id, fields = _make_stream_message(
+            msg_id="msg-opaque", msg_type="type_opaque"
+        )
+        # Must not raise: serialization failure is contained per-message
+        worker._process_message(msg_id, fields, mock_handler)
+
+        mock_redis.xack.assert_called_once_with(
+            "gpmq:messages", "test-subscriber", "msg-opaque"
+        )
+        published = mock_redis.publish.call_args[0][1]
+        assert published["status"] == "exception"
+        assert "not JSON serializable" in published["error_message"]
+        saved_result = mock_audit.save_result.call_args[0][1]
+        assert saved_result.status == ProcessStatus.EXCEPTION
+
+    def test_json_native_return_published_unchanged(self):
+        """Already-JSON-native returns pass through byte-identical."""
+
+        data = {
+            "count": 3,
+            "name": "x",
+            "ratio": 1.5,
+            "ok": True,
+            "tags": ["a", "b"],
+            "nested": {"k": None},
+        }
+        mock_redis = MagicMock()
+        mock_audit = MagicMock()
+        mock_handler = MagicMock(return_value=data)
+        worker = self._make_worker(mock_redis, mock_audit, ["type_native"])
+
+        msg_id, fields = _make_stream_message(
+            msg_id="msg-native", msg_type="type_native"
+        )
+        worker._process_message(msg_id, fields, mock_handler)
+
+        published = mock_redis.publish.call_args[0][1]
+        assert published["status"] == "success"
+        assert json.dumps(published["data"], sort_keys=True) == json.dumps(
+            data, sort_keys=True
+        )
+
+
 class TestWorkerEmbeddedPublisher:
     """Tests for embedded publisher in worker context."""
 

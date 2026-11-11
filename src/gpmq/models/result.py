@@ -27,7 +27,14 @@ class ProcessResult(BaseModel):
     processing_time: float = Field(..., ge=0, description="Processing time in seconds")
 
     data: Optional[dict[str, Any]] = Field(
-        default=None, description="Return data (optional)"
+        default=None,
+        description=(
+            "Return data (optional). Values are normalized to JSON-native "
+            "on the result path: stdlib types (date/datetime -> ISO string, "
+            "Decimal -> string, UUID -> string, Enum -> value) are converted "
+            "automatically; values of unknown types fail the message with an "
+            "EXCEPTION receipt instead of crashing the worker"
+        ),
     )
     error_message: Optional[str] = Field(default=None, description="Error message")
     error_traceback: Optional[str] = Field(

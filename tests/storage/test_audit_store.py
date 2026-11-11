@@ -1,5 +1,6 @@
 """SQLite audit store for GPMQ messages and results."""
 
+import json
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 
@@ -77,6 +78,39 @@ def test_save_result(audit_store):
     assert row["status"] == "success"
     assert row["subscriber_name"] == "test_sub"
     assert row["processing_time"] == 0.5
+
+
+def test_save_result_converts_stdlib_types_to_json(audit_store):
+    """data with date/Decimal must persist as JSON strings, not crash json.dumps.
+
+    Regression for the 0.11.1 defect: save_result raised TypeError before
+    the message was ACKed, crashing the worker with the message stuck in
+    the PEL.
+    """
+    from datetime import date
+    from decimal import Decimal
+
+    from gpmq.models.result import ProcessStatus, ProcessResult
+
+    result = ProcessResult(
+        message_id="test-json",
+        status=ProcessStatus.SUCCESS,
+        subscriber_name="test_sub",
+        processing_time=0.5,
+        data={"trade_date": date(2026, 11, 6), "price": Decimal("10.00")},
+    )
+    audit_store.save_result("test-json", result)
+
+    conn = sqlite3.connect(audit_store._db_path)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute("SELECT data FROM results WHERE message_id = ?", ("test-json",))
+    row = cursor.fetchone()
+    conn.close()
+
+    assert row is not None
+    stored = json.loads(row["data"])
+    assert stored == {"trade_date": "2026-11-06", "price": "10.00"}
 
 
 def test_save_fail_fast_on_error(audit_store, temp_db_path):

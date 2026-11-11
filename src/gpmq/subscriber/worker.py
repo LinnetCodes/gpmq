@@ -14,6 +14,7 @@ from multiprocessing import Process
 from typing import Any, Optional, TYPE_CHECKING
 
 from gpconfig import GPConfigManager
+from pydantic_core import to_jsonable_python
 
 from gpmq.log import get_logger
 from gpmq.config import set_config_manager
@@ -600,6 +601,30 @@ class Worker(Process):
                 data=result if isinstance(result, dict) else {"value": result},
             )
 
+        # --- 4b. JSON-safe normalize result data ---
+        # ``data`` crosses two JSON boundaries (AuditStore's json.dumps and
+        # the result publish); stdlib types inside it (date/datetime/Decimal/
+        # UUID/...) are converted once here so both boundaries receive
+        # JSON-native values. Unknown types fail HERE, per-message: converted
+        # to an EXCEPTION receipt instead of crashing the worker loop
+        # mid-flight (message ACKed, RPC caller left waiting into TIMEOUT).
+        if process_result.data is not None:
+            try:
+                process_result = process_result.model_copy(
+                    update={"data": to_jsonable_python(process_result.data)}
+                )
+            except Exception as exc:
+                process_result = ProcessResult(
+                    message_id=msg_id,
+                    status=ProcessStatus.EXCEPTION,
+                    subscriber_name=self._subscriber_name,
+                    processing_time=elapsed,
+                    error_message=(
+                        f"handler return data is not JSON serializable: {exc}"
+                    ),
+                    error_traceback=traceback.format_exc(),
+                )
+
         self._record_message_activity(msg_id)
 
         # --- 5. Save to audit ---
@@ -631,7 +656,9 @@ class Worker(Process):
         if not reply_token:
             return
         channel = f"{self._key_prefix}result:{reply_token}:{self._subscriber_name}"
-        self._redis.publish(channel, result.model_dump())
+        # mode="json": the wire boundary is JSON — belt-and-braces on top of
+        # the step-4b normalization, also covering future envelope fields.
+        self._redis.publish(channel, result.model_dump(mode="json"))
 
     def _register_self(self) -> None:
         """Register this worker in the Redis worker registry."""

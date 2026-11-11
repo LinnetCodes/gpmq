@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.11.2] - 2026-11-11
+
+### Fixed
+
+- **RPC result publishing no longer crashes the worker when a handler
+  returns stdlib types.** A dict return value containing `date`,
+  `datetime`, `Decimal`, `UUID`, or `Enum` values used to raise
+  `TypeError: Object of type date is not JSON serializable` on the
+  serialization path — `AuditStore.save_result`'s `json.dumps` (audit
+  enabled, message left un-ACKed in the PEL) or the result publish
+  (audit disabled, message ACKed) — killing the worker process and
+  leaving every later RPC of that subscriber timing out until a manual
+  restart. The result data is now normalized once in
+  `Worker._process_message` via `pydantic_core.to_jsonable_python`
+  (stdlib types become JSON-native: dates/times as ISO strings,
+  `Decimal` as string, `UUID` as string, `Enum` as its value) before it
+  reaches either JSON boundary; the result publish uses
+  `model_dump(mode="json")`. Values of unknown types still fail fast —
+  but contained per-message: the caller receives an `EXCEPTION` receipt
+  (error message names the unserializable data) and the worker keeps
+  running, matching how handler exceptions are already treated. Already
+  JSON-native return values are published byte-identically. No interface
+  change: `ProcessResult` structure, channel format, and the caller-side
+  decode are untouched (dates never successfully reached callers before
+  this fix). Publisher-side `payload` intentionally keeps its
+  immediate fail-fast behavior. Found in quantas Q-07
+  (`dev_docs/issues/gpmq-rpc-result-json-serialization.md`).
+
 ## [0.11.1] - 2026-11-08
 
 ### Added

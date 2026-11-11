@@ -7,6 +7,8 @@ import threading
 from datetime import datetime
 from typing import Any
 
+from pydantic_core import to_jsonable_python
+
 from gpmq.models.message import Message
 from gpmq.models.result import ProcessResult, ProcessStatus
 
@@ -237,7 +239,12 @@ class AuditStore:
                     result.subscriber_name,
                     new_status,
                     result.processing_time,
-                    json.dumps(result.data) if result.data else None,
+                    # to_jsonable_python: stdlib types (date/Decimal/...) in
+                    # result.data persist as JSON-native values instead of
+                    # crashing json.dumps before the message is ACKed.
+                    json.dumps(to_jsonable_python(result.data))
+                    if result.data
+                    else None,
                     result.error_message,
                     result.error_traceback,
                     result.timeout_seconds,
