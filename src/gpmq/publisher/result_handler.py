@@ -84,12 +84,16 @@ class ResultHandler:
         """Block until all results collected or timeout.
 
         Args:
-            timeout: Max seconds to wait. None = use default polling.
+            timeout: Max seconds to wait. None = wait indefinitely
+                (1-second poll intervals).
             allow_timeout_retry: allow re-entry of this method (not save timeout result and unsubscribe ProcessResult)
 
         Returns:
             Dict mapping subscriber_name to ProcessResult.
-            Missing subscribers get TIMEOUT status.
+            Missing subscribers get TIMEOUT status. A TIMEOUT is only the
+            caller giving up — not evidence the message died: a worker
+            death is reported later as ABANDONED (and lands in the
+            audit), possibly after this call already returned.
         """
         if not self._expected:
             return {}
@@ -161,7 +165,8 @@ class ResultHandler:
         """Wait for at least one result.
 
         Args:
-            timeout: Max seconds to wait. None = use default polling.
+            timeout: Max seconds to wait. None = wait indefinitely
+                (1-second poll intervals).
 
         Returns:
             Dict with at least one result. Empty dict if timeout with no results.

@@ -615,9 +615,9 @@ results = batch.get_all_result()
 | `stream_trim_on_last_stop` | `true` | 最后一个已注册的订阅者停止时执行一次最终裁剪。 |
 | `stream_trim_idle_maxlen` | `None` | 注册表为空期间，发布者通过 `XADD MAXLEN N` 为 Stream 施加条目数上限。`None` = 不设上限。 |
 | `publish_require_subscriber` | `false` | 没有**已注册**订阅者声明该消息类型时，直接跳过发布（不写入 Stream）。已注册但离线的订阅者仍会收到消息，因此崩溃后仍能补上离线期间的消息。 |
-| `pel_abandon_idle_seconds` | `60.0` | PEL 条目闲置多少秒后被订阅者心跳扫描放弃（XACK 清出 PEL + `abandoned` 审计记录；绝不重投）。`0` 关闭孤儿回收。应显著大于最长 handler 执行时长；RPC 调用方的 timeout 建议显著小于该值（仅为尽早失败——调用方始终只会看到自己的 `TIMEOUT`）。需要 Redis >= 6.2（IDLE 过滤）；旧版服务器请设为 `0`。 |
+| `pel_abandon_idle_seconds` | `60.0` | PEL 条目闲置多少秒后被订阅者心跳扫描放弃（XACK 清出 PEL + `abandoned` 审计记录；绝不重投）。`0` 关闭孤儿回收。应显著大于最长 handler 执行时长；RPC 调用方的 timeout 建议显著小于该值（先到期的调用方仍看到自己的 `TIMEOUT`；回收时仍在等待的调用方会收到 `ABANDONED` 回执——见下文）。需要 Redis >= 6.2（IDLE 过滤）；旧版服务器请设为 `0`。 |
 
-**孤儿 pending 条目** — Worker 在处理中途死亡会将其条目留在消费组的 PEL 中。心跳扫描会将闲置超过 `pel_abandon_idle_seconds` 的条目放弃：XACK 清出 PEL、在审计库记为 `abandoned` 结果，且不再卡住保留策略的安全点。绝不重投——中断即终局失败（至多一次处理）：handler 不会观察到任何新状态，RPC 调用方仍然只会看到自己的 `TIMEOUT`。执行缓慢但活着的 handler 即便条目被提前放弃也无害：它随后写入的真结果会在审计库中覆盖 `abandoned` 占位。
+**孤儿 pending 条目** — Worker 在处理中途死亡会将其条目留在消费组的 PEL 中。心跳扫描会将闲置超过 `pel_abandon_idle_seconds` 的条目放弃：XACK 清出 PEL、在审计库记为 `abandoned` 结果，且不再卡住保留策略的安全点。绝不重投——中断即终局失败（至多一次处理）：handler 不会观察到任何新状态。回收发生时仍在等待的调用方会在回包频道上收到 `ABANDONED` 回执（由扫描尽力发布，频道与格式和 worker 结果完全一致；发布者侧审计同步落档，与订阅者侧一致）。调用方自身 timeout 先到期的仍看到 `TIMEOUT`——`TIMEOUT` 回执只代表调用方放弃等待，不代表消息死亡；权威终态以审计为准。执行缓慢但活着的 handler 即便条目被提前放弃也无害：它随后写入的真结果会在审计库中覆盖 `abandoned` 占位（调用方可能已提前拿到 `ABANDONED` 回执返回）。
 
 ---
 
@@ -873,7 +873,7 @@ class ProcessResult(BaseModel):
 | `FAILURE` | 处理器显式返回 `ProcessStatus.FAILURE`（规约定义的失败状态，非异常） |
 | `EXCEPTION` | 处理过程中抛出了异常 |
 | `TIMEOUT` | 处理超时，Worker 被强制终止 |
-| `ABANDONED` | 条目被从 PEL 中放弃：闲置超过 `pel_abandon_idle_seconds`，处理被中断（推定 worker 死亡）。仅用于审计的占位状态——不会投递给调用方 |
+| `ABANDONED` | 条目被从 PEL 中放弃：闲置超过 `pel_abandon_idle_seconds`，处理被中断（推定 worker 死亡）。回收发生时投递给仍在等待的 RPC 调用方（0.11.3 起）；其余情况仅作审计占位 |
 
 **ProcessResult 字段**
 

@@ -191,6 +191,84 @@ class TestMaybeAbandonPending:
         assert not (tmp_path / "audit.db").exists()
 
 
+class TestAbandonedReceiptPublish:
+    """ABANDONED receipt publish: notify a waiting RPC caller, best-effort.
+
+    The sweep runs after the owning worker died; a caller blocked in
+    ResultHandler.wait() can only learn the true terminal state via a
+    publish on {prefix}result:{reply_token}:{name} — same channel and
+    serialization as worker-side _publish_result. Best-effort: a publish
+    failure is logged but never blocks the XACK.
+    """
+
+    def test_publishes_receipt_on_reply_channel(self):
+        subscriber = _make_subscriber(pel_abandon_idle_seconds=60.0)
+        adapter = _with_redis(subscriber)
+        adapter.xpending_range.return_value = [_entry("5-0")]
+        adapter.xrange.return_value = [
+            ("5-0", {"type": "t.x", "publisher": "p", "reply_token": "tok-1"})
+        ]
+
+        subscriber._maybe_abandon_pending()
+
+        adapter.publish.assert_called_once()
+        channel, payload = adapter.publish.call_args[0]
+        assert channel == "gpmq:result:tok-1:abandon_test"
+        assert payload["status"] == "abandoned"
+        assert payload["message_id"] == "5-0"
+        assert payload["subscriber_name"] == "abandon_test"
+
+    def test_publish_order_audit_then_publish_then_xack(self):
+        subscriber = _make_subscriber(pel_abandon_idle_seconds=60.0, enable_audit=True)
+        adapter = _with_redis(subscriber)
+        audit = MagicMock()
+        subscriber._audit = audit  # pre-injected: skip opening SQLite
+        adapter.xpending_range.return_value = [_entry("5-0")]
+        adapter.xrange.return_value = [("5-0", {"reply_token": "tok-1"})]
+
+        calls: list[str] = []
+        audit.save_result.side_effect = lambda *a, **k: calls.append("save")
+        adapter.publish.side_effect = lambda *a, **k: calls.append("publish")
+        adapter.xack.side_effect = lambda *a, **k: calls.append("xack")
+
+        subscriber._maybe_abandon_pending()
+
+        assert calls == ["save", "publish", "xack"]
+
+    def test_fire_and_forget_entry_not_published(self):
+        subscriber = _make_subscriber(pel_abandon_idle_seconds=60.0)
+        adapter = _with_redis(subscriber)
+        adapter.xpending_range.return_value = [_entry("5-0")]
+        adapter.xrange.return_value = [("5-0", {"type": "t.x"})]  # no token
+
+        subscriber._maybe_abandon_pending()
+
+        adapter.publish.assert_not_called()
+        adapter.xack.assert_called_once()
+
+    def test_fields_unavailable_skips_publish(self):
+        subscriber = _make_subscriber(pel_abandon_idle_seconds=60.0)
+        adapter = _with_redis(subscriber)
+        adapter.xpending_range.return_value = [_entry("5-0")]
+        adapter.xrange.return_value = []  # entry already trimmed from stream
+
+        subscriber._maybe_abandon_pending()
+
+        adapter.publish.assert_not_called()
+        adapter.xack.assert_called_once()
+
+    def test_publish_failure_still_xacks(self):
+        subscriber = _make_subscriber(pel_abandon_idle_seconds=60.0)
+        adapter = _with_redis(subscriber)
+        adapter.xpending_range.return_value = [_entry("5-0")]
+        adapter.xrange.return_value = [("5-0", {"reply_token": "tok-1"})]
+        adapter.publish.side_effect = RuntimeError("redis down")
+
+        subscriber._maybe_abandon_pending()  # must not raise
+
+        adapter.xack.assert_called_once_with("gpmq:messages", "abandon_test", "5-0")
+
+
 class TestHeartbeatLoopAbandon:
     @staticmethod
     def _run_one_round(subscriber: Subscriber) -> None:

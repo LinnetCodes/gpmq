@@ -205,3 +205,26 @@ def test_process_result_accepts_abandoned():
     )
     assert result.status is ProcessStatus.ABANDONED
     assert result.model_dump()["status"] == "abandoned"
+
+
+def test_abandoned_wire_payload_validates():
+    """The sweep's ABANDONED receipt crosses Pub/Sub as a mode="json"
+    dump; a publisher's ResultHandler consumes it via model_validate
+    unchanged. (Publishers < 0.11.1 lack the enum member and raise
+    ValidationError instead — deployment constraint in CHANGELOG 0.11.3.)
+    """
+    from gpmq.models.result import ProcessResult, ProcessStatus
+
+    wire = ProcessResult(
+        message_id="5-0",
+        status=ProcessStatus.ABANDONED,
+        subscriber_name="sub",
+        processing_time=0.0,
+        error_message="abandoned: idle 65.0s in PEL",
+    ).model_dump(mode="json")
+
+    result = ProcessResult.model_validate(wire)
+
+    assert result.status is ProcessStatus.ABANDONED
+    assert result.message_id == "5-0"
+    assert result.error_message == "abandoned: idle 65.0s in PEL"

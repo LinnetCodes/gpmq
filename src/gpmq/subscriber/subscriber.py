@@ -370,13 +370,25 @@ class Subscriber:
             )
 
     def _abandon_entry(self, entry: dict[str, Any]) -> None:
-        """Abandon one idle PEL entry: audit ABANDONED, XACK, warn.
+        """Abandon one idle PEL entry: audit, notify caller, XACK, warn.
 
-        Per-entry order is audit-then-xack: unblocking the trim point
-        outranks observability, so an audit failure is logged but the
-        XACK still runs. Both steps are idempotent on re-sweep (the
-        audit ladder ignores ABANDONED-over-ABANDONED; XACK on a cleared
-        entry is a no-op).
+        Per-entry order is audit → publish → xack: unblocking the trim
+        point outranks observability, so an audit or publish failure is
+        logged but the XACK still runs. All steps are idempotent on
+        re-sweep (the audit ladder ignores ABANDONED-over-ABANDONED; a
+        duplicate receipt only overwrites the caller's result for this
+        subscriber; XACK on a cleared entry is a no-op). Publishing
+        before the XACK is deliberate: dying between the two replays a
+        benign duplicate receipt, while the reverse order would lose the
+        notification forever (no entry left to re-sweep).
+
+        The publish is best-effort and mirrors worker-side
+        ``Worker._publish_result``: only entries whose envelope carries
+        a ``reply_token`` (the RPC path) are published — fire-and-forget
+        sends have nobody listening. A waiting ``ResultHandler.wait()``
+        then unblocks with the true ABANDONED terminal state instead of
+        its own TIMEOUT; entries already trimmed from the stream have no
+        token to read, so they fall back to the silent status quo.
 
         Args:
             entry: One ``xpending_range`` dict (message_id, consumer,
@@ -387,8 +399,10 @@ class Subscriber:
         message_id = entry["message_id"]
         idle_s = entry.get("time_since_delivered", 0) / 1000.0
 
-        # Log-only detail read; the fields may already be gone (manual
-        # trim) — the abandon itself must not depend on it.
+        # Detail read feeds the log line AND the reply_token below; the
+        # fields may already be gone (manual trim) — the abandon itself
+        # must not depend on it.
+        fields: dict[str, str] | None = None
         detail = ""
         try:
             rows = redis.xrange(
@@ -427,6 +441,25 @@ class Subscriber:
                 message_id,
                 traceback.format_exc(),
             )
+
+        # Best-effort ABANDONED receipt for a waiting RPC caller; the
+        # token check mirrors the poison path (worker-side: only a plain
+        # non-empty string token is routable).
+        raw_token = fields.get("reply_token") if fields else None
+        token = raw_token if isinstance(raw_token, str) and raw_token else None
+        if token:
+            try:
+                channel = (
+                    f"{self._config.registry_key_prefix}result:{token}:{self.name}"
+                )
+                redis.publish(channel, process_result.model_dump(mode="json"))
+            except Exception:
+                logger.error(
+                    "Failed to publish ABANDONED receipt for {} "
+                    "(xack still runs)\n{}",
+                    message_id,
+                    traceback.format_exc(),
+                )
 
         redis.xack(self._config.stream_name, self.name, message_id)
         logger.warning(

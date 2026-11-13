@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.11.3] - 2026-11-13
+
+### Fixed
+
+- **ABANDONED is now reported to waiting RPC callers instead of leaving
+  them hanging or misjudging TIMEOUT.** Since 0.11.1, an entry whose
+  worker died mid-processing is swept out of the PEL and audited as
+  `abandoned` — but nobody told the caller: the result never appeared on
+  the reply channel, so `ResultHandler.wait()` either hung forever
+  (`timeout=None`) or synthesized its own `TIMEOUT`, splitting the two
+  audit records (publisher: timeout, subscriber: abandoned) and masking
+  the real failure ("worker died" read as "too slow"). ABANDONED was the
+  only terminal state with no publish path. The sweep
+  (`Subscriber._abandon_entry`) now best-effort publishes the
+  `ProcessResult(ABANDONED)` receipt on the same
+  `{prefix}result:{reply_token}:{subscriber}` channel and with the same
+  `model_dump(mode="json")` serialization as worker-side results, in the
+  order audit → publish → XACK (a publish failure is logged, never
+  blocks the XACK; dying between publish and XACK only replays a benign
+  duplicate on re-sweep). Zero caller-side change: `wait()` /
+  `wait_any()` receive the receipt as an ordinary result — the call
+  unblocks with the true terminal state and the publisher-side audit
+  records `abandoned`, agreeing with the subscriber side. Fire-and-forget
+  messages (no `reply_token`) and entries already trimmed from the
+  stream (no token to read) skip the publish. Note the timing asymmetry
+  is unchanged: abandons happen only after `pel_abandon_idle_seconds`
+  (default 60s), so short-timeout callers still see `TIMEOUT` first — a
+  TIMEOUT receipt means the caller gave up, not that the message died;
+  the authoritative terminal state is in the audit. `wait()` /
+  `wait_any()` docstrings now say plainly that `timeout=None` waits
+  indefinitely (1s polls) — the old "use default polling" wording
+  suggested a default deadline that never existed. Found in the worker
+  sticky-routing design review
+  (`dev_docs/issues/gpmq-abandoned-result-notify.md`).
+  **Deployment constraint (internal protocol, same family as 0.9.0):**
+  once subscribers run this fix, RPC publishers must be ≥ 0.11.1 —
+  older publishers lack the `ABANDONED` enum member and their
+  `wait()` would raise `ValidationError` on the receipt. Publisher and
+  subscriber packages should be upgraded together.
+
 ## [0.11.2] - 2026-11-11
 
 ### Fixed
