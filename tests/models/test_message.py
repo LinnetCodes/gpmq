@@ -1,6 +1,6 @@
 """Tests for Message model."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 import pytest
 
@@ -156,3 +156,39 @@ class TestMessage:
             target_subscribers=["data_loader"],
         )
         assert msg.model_dump()["target_subscribers"] == ["data_loader"]
+
+
+class TestTargetWorkerField:
+    def test_default_is_none(self):
+        msg = Message(
+            id="1-1",
+            type="t",
+            timestamp=datetime.now(timezone.utc),
+            publisher="p",
+            payload={},
+        )
+        assert msg.target_worker is None
+
+    def test_accepts_int(self):
+        msg = Message(
+            id="1-1",
+            type="t",
+            timestamp=datetime.now(timezone.utc),
+            publisher="p",
+            payload={},
+            target_worker=3,
+        )
+        assert msg.target_worker == 3
+
+    def test_rejects_negative(self):
+        import pytest as _pytest
+
+        with _pytest.raises(Exception):
+            Message(
+                id="1-1",
+                type="t",
+                timestamp=datetime.now(timezone.utc),
+                publisher="p",
+                payload={},
+                target_worker=-1,
+            )

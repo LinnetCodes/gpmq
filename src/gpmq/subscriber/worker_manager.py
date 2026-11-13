@@ -69,7 +69,7 @@ class WorkerManager:
         self._worker_ctx = worker_context
         self._redis = redis_conn
         self._subscriber_name = config_dict.get("name", "subscriber")
-        self._heartbeat_interval = config_dict.get("heartbeat_interval", 10)
+        self._heartbeat_interval = config_dict.get("heartbeat_interval", 15)
 
         global logger
         logger = get_logger(self._config["log_category"])
@@ -144,6 +144,10 @@ class WorkerManager:
         stale. When registry data is missing, last_activity degrades to
         the query time and counters default to zero.
 
+        Each status also carries ``pending_pel`` — this worker's consumer
+        PEL depth, read from a single group ``xpending`` summary (0 when
+        the summary is unavailable).
+
         Note: worker-level heartbeat stops updating while a worker is blocked
         in a slow handler, so "heartbeat expired" can mean zombie OR
         legitimately slow processing; the stuck message itself is visible
@@ -172,6 +176,25 @@ class WorkerManager:
         stale_threshold = self._heartbeat_interval * 3
         now_ts = time.time()
 
+        # Per-consumer PEL depths from the group summary (one call).
+        pel_by_consumer: dict[str, int] = {}
+        if self._redis is not None:
+            try:
+                summary = self._redis.xpending(
+                    self._config.get("stream_name", "gpmq:messages"),
+                    self._subscriber_name,
+                )
+                for consumer_info in summary.get("consumers", []) or []:
+                    cname = consumer_info.get("name")
+                    if cname:
+                        pel_by_consumer[cname] = int(consumer_info.get("pending", 0))
+            except Exception:
+                logger.error(
+                    "Failed to read PEL depths for {}\n{}",
+                    self._subscriber_name,
+                    traceback.format_exc(),
+                )
+
         statuses = []
         for worker in self._workers:
             raw = info_map.get(worker.worker_id)
@@ -198,6 +221,9 @@ class WorkerManager:
                     if raw
                     else 0,
                     last_activity=(_worker_activity_time(raw) or now) if raw else now,
+                    pending_pel=pel_by_consumer.get(
+                        f"{self._subscriber_name}:{worker.worker_id}", 0
+                    ),
                 )
             )
         return statuses

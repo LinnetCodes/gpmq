@@ -5,7 +5,7 @@ import uuid
 from typing import Any, Optional
 
 from gpmq.config import GPMQConfig
-from gpmq.exceptions import InvalidTargetSubscriberError
+from gpmq.exceptions import InvalidTargetSubscriberError, InvalidTargetWorkerError
 from gpmq.log import get_logger
 from gpmq.models.message import Message
 from gpmq.publisher.result_handler import ResultHandler
@@ -69,6 +69,10 @@ class Publisher:
         Returns:
             Tuple of (message_id, ResultHandler)
         """
+        # Sticky-routing usage errors fail fast, ahead of subscriber
+        # resolution and any retention-gate decision (design §2.1).
+        self._validate_target_worker_usage(message)
+
         # Resolve expected subscribers: explicit target list takes precedence
         # over the legacy "all active matching subscribers" path.
         if message.target_subscribers:
@@ -153,6 +157,10 @@ class Publisher:
             (publish_require_subscriber enabled and no registered subscriber
             handles its type)
         """
+        # Sticky-routing usage errors fail fast, ahead of subscriber
+        # validation and any retention-gate decision (design §2.1).
+        self._validate_target_worker_usage(message)
+
         if message.target_subscribers:
             self._validate_target_subscribers(message.type, message.target_subscribers)
         elif (
@@ -236,6 +244,71 @@ class Publisher:
         if failures:
             raise InvalidTargetSubscriberError(message_type, failures)
 
+    def _validate_target_worker_usage(self, message: Message) -> None:
+        """Enforce the design §2.1 mutex rule for sticky routing.
+
+        ``target_worker`` is only meaningful alongside exactly one
+        explicit ``target_subscribers`` entry; any other shape (no
+        targets or multiple) is a usage error and fails fast before
+        any subscriber resolution or retention-gate decision. When the
+        mutex holds, the range rule is delegated to
+        :meth:`_validate_target_worker`.
+
+        Args:
+            message: Message whose ``target_worker`` is validated.
+
+        Raises:
+            InvalidTargetWorkerError: if ``target_worker`` is set and
+                ``target_subscribers`` does not hold exactly one name,
+                or the slot fails the range check.
+        """
+        if message.target_worker is None:
+            return
+        targets = message.target_subscribers or []
+        if len(targets) != 1:
+            raise InvalidTargetWorkerError(
+                ",".join(targets) or "<none>",
+                message.target_worker,
+                "target_worker requires exactly one explicit "
+                "target_subscriber (design §2.1 mutex rule)",
+            )
+        self._validate_target_worker(message.type, targets[0], message.target_worker)
+
+    def _validate_target_worker(
+        self, message_type: str, subscriber_name: str, target_worker: int
+    ) -> None:
+        """Validate a sticky-routing slot against its target subscriber.
+
+        Range rule (design §2.1): the 0-based slot must fit the target
+        subscriber's registered worker count. A missing or non-int
+        ``workers`` value is rejected as well (fail-fast, mirroring the
+        payload serialization asymmetry).
+
+        Args:
+            message_type: Message type (for error context only).
+            subscriber_name: The single explicit target subscriber.
+            target_worker: 0-based worker slot to validate.
+
+        Raises:
+            InvalidTargetWorkerError: if the subscriber info carries no
+                usable ``workers`` count or the slot is out of range.
+        """
+        info = self._redis.get_subscriber_info(subscriber_name)
+        workers = info.get("workers") if info else None
+        if not isinstance(workers, int) or workers < 1:
+            raise InvalidTargetWorkerError(
+                subscriber_name,
+                target_worker,
+                "subscriber info has no usable 'workers' count "
+                f"(type={message_type!r})",
+            )
+        if not 0 <= target_worker < workers:
+            raise InvalidTargetWorkerError(
+                subscriber_name,
+                target_worker,
+                f"slot out of range for {workers} worker(s)",
+            )
+
     def _registered_subscribers_handle(self, message_type: str) -> bool:
         """Check whether any registered subscriber declares *message_type*.
 
@@ -290,4 +363,6 @@ class Publisher:
             fields["reply_token"] = message.reply_token
         if message.target_subscribers is not None:
             fields["target_subscribers"] = json.dumps(message.target_subscribers)
+        if message.target_worker is not None:
+            fields["target_worker"] = str(message.target_worker)
         return fields

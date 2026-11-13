@@ -3,6 +3,7 @@
 from unittest.mock import MagicMock
 
 from gpmq.async_batch import GPMQAsyncBatchHandler
+from gpmq.exceptions import InvalidTargetWorkerError
 from gpmq.models.result import ProcessResult, ProcessStatus
 from gpmq.publisher.result_handler import ResultHandler
 
@@ -92,8 +93,8 @@ class TestGPMQAsyncBatchHandlerSendMessage:
         handler.send_message("type_a", {"id": 1})
         handler.send_message("type_b", {"id": 2}, correlation_id="corr-1")
         assert handler._pending_messages == [
-            ("type_a", {"id": 1}, None, None),
-            ("type_b", {"id": 2}, "corr-1", None),
+            ("type_a", {"id": 1}, None, None, None),
+            ("type_b", {"id": 2}, "corr-1", None, None),
         ]
 
     def test_send_message_stores_target_subscribers_str(self):
@@ -101,7 +102,7 @@ class TestGPMQAsyncBatchHandlerSendMessage:
         client = _make_mock_client()
         handler = GPMQAsyncBatchHandler(client)
         handler.send_message("type_a", {"id": 1}, target_subscribers="sub-a")
-        assert handler._pending_messages == [("type_a", {"id": 1}, None, "sub-a")]
+        assert handler._pending_messages == [("type_a", {"id": 1}, None, "sub-a", None)]
 
     def test_send_message_stores_target_subscribers_list(self):
         """send_message should store a list target as-is (4th element)."""
@@ -109,7 +110,7 @@ class TestGPMQAsyncBatchHandlerSendMessage:
         handler = GPMQAsyncBatchHandler(client)
         handler.send_message("type_a", {"id": 1}, target_subscribers=["sub-a", "sub-b"])
         assert handler._pending_messages == [
-            ("type_a", {"id": 1}, None, ["sub-a", "sub-b"])
+            ("type_a", {"id": 1}, None, ["sub-a", "sub-b"], None)
         ]
 
 
@@ -615,7 +616,7 @@ class TestGPMQAsyncBatchHandlerForwardsTarget:
 
         # publish_async receives the raw target list as 4th positional arg
         call_args = client.publish_async.call_args
-        assert call_args[0] == ("t1", {"id": 1}, None, ["sub-a", "sub-b"])
+        assert call_args[0] == ("t1", {"id": 1}, None, ["sub-a", "sub-b"], None)
 
     def test_wait_all_forwards_none_when_no_target(self):
         client = _make_mock_client()
@@ -630,7 +631,7 @@ class TestGPMQAsyncBatchHandlerForwardsTarget:
         handler.wait_all()
 
         call_args = client.publish_async.call_args
-        assert call_args[0] == ("t1", {"id": 1}, None, None)
+        assert call_args[0] == ("t1", {"id": 1}, None, None, None)
 
     def test_wait_all_forwards_target_during_refill(self):
         """A message sent during the sliding-window refill must also carry its target.
@@ -659,7 +660,152 @@ class TestGPMQAsyncBatchHandlerForwardsTarget:
 
         # Third publish_async call (index 2) is the refill of t2 and carries "sub-x"
         refill_call = client.publish_async.call_args_list[2]
-        assert refill_call[0] == ("t2", {"id": 2}, None, "sub-x")
+        assert refill_call[0] == ("t2", {"id": 2}, None, "sub-x", None)
+
+
+class TestBatchTargetWorker:
+    """Queue-time validation and pass-through of target_worker (design §2.1)."""
+
+    def test_send_message_rejects_missing_target_subscribers(self):
+        """target_worker without target_subscribers fails at queue time."""
+        import pytest
+
+        client = _make_mock_client()
+        batch = GPMQAsyncBatchHandler(client)
+        with pytest.raises(InvalidTargetWorkerError, match="exactly one"):
+            batch.send_message("task", {}, target_worker=3)
+        assert batch._pending_messages == []
+        client.publish_async.assert_not_called()
+
+    def test_send_message_rejects_multiple_targets(self):
+        """target_worker with multiple target_subscribers fails at queue time."""
+        import pytest
+
+        client = _make_mock_client()
+        batch = GPMQAsyncBatchHandler(client)
+        with pytest.raises(InvalidTargetWorkerError, match="exactly one"):
+            batch.send_message(
+                "task", {}, target_subscribers=["sub-a", "sub-b"], target_worker=3
+            )
+        assert batch._pending_messages == []
+
+    def test_send_message_rejects_bad_type_or_negative(self):
+        """Non-int (str/bool) and negative target_worker fail at queue time."""
+        import pytest
+
+        client = _make_mock_client()
+        batch = GPMQAsyncBatchHandler(client)
+        with pytest.raises(InvalidTargetWorkerError, match="non-negative int"):
+            batch.send_message(
+                "task", {}, target_subscribers="sub-a", target_worker="3"
+            )
+        with pytest.raises(InvalidTargetWorkerError, match="non-negative int"):
+            batch.send_message(
+                "task", {}, target_subscribers="sub-a", target_worker=True
+            )
+        with pytest.raises(InvalidTargetWorkerError, match="non-negative int"):
+            batch.send_message("task", {}, target_subscribers="sub-a", target_worker=-1)
+        assert batch._pending_messages == []
+
+    def test_send_message_malformed_targets_with_worker_raise_routing_error(self):
+        """Malformed target_subscribers (empty list / blank names) under
+        a routing key fail at queue time as InvalidTargetWorkerError —
+        not as the direct path's bare ValueError (review finding 4)."""
+        import pytest
+
+        client = _make_mock_client()
+        batch = GPMQAsyncBatchHandler(client)
+        with pytest.raises(
+            InvalidTargetWorkerError, match="invalid target_subscribers"
+        ) as excinfo:
+            batch.send_message("task", {}, target_subscribers=[], target_worker=1)
+        assert excinfo.value.subscriber_name == "[]"
+        assert excinfo.value.target_worker == 1
+        with pytest.raises(InvalidTargetWorkerError, match="non-empty strings"):
+            batch.send_message("task", {}, target_subscribers=[""], target_worker=1)
+        assert batch._pending_messages == []
+        client.publish_async.assert_not_called()
+
+    def test_send_message_empty_targets_without_worker_keeps_bare_valueerror(self):
+        """Pinned unchanged behavior: without target_worker there is no
+        queue-time validation — malformed targets flow to publish time,
+        where the direct path's bare ValueError (not the routing error)
+        still fires."""
+        import pytest
+
+        from gpmq.client import GPMQClient
+
+        client = _make_mock_client()
+        # Mirror the real publish path: normalization runs inside
+        # publish_async, before anything touches Redis.
+        client.publish_async.side_effect = lambda mt, p, cid, targets, tw: (
+            GPMQClient._normalize_targets(targets)
+        )
+        batch = GPMQAsyncBatchHandler(client)
+        batch.send_message("task", {}, target_subscribers=[])  # queued, no raise
+        with pytest.raises(ValueError, match="must not be empty") as excinfo:
+            batch.wait_all()
+        assert not isinstance(excinfo.value, InvalidTargetWorkerError)
+
+    def test_send_message_accepts_valid_combination(self):
+        """Str target + int worker queues fine; wait_all forwards it to publish_async."""
+        client = _make_mock_client()
+        rh1 = MagicMock(spec=ResultHandler)
+        client.publish_async.side_effect = [rh1]
+        client.wait_all.return_value = [
+            {"ctx-holder": _make_success_result("ctx-holder", "msg-1")}
+        ]
+
+        batch = GPMQAsyncBatchHandler(client, queue_size=32)
+        batch.send_message(
+            "task", {"id": 1}, target_subscribers="ctx-holder", target_worker=3
+        )
+        batch.wait_all()
+
+        call_args = client.publish_async.call_args
+        assert call_args[0] == ("task", {"id": 1}, None, "ctx-holder", 3)
+
+    def test_send_message_without_target_worker_unchanged(self):
+        """Omitting target_worker keeps legacy behavior: publish_async gets None."""
+        client = _make_mock_client()
+        rh1 = MagicMock(spec=ResultHandler)
+        client.publish_async.side_effect = [rh1]
+        client.wait_all.return_value = [
+            {"sub-a": _make_success_result("sub-a", "msg-1")}
+        ]
+
+        batch = GPMQAsyncBatchHandler(client, queue_size=32)
+        batch.send_message("t1", {"id": 1})
+        batch.wait_all()
+
+        call_args = client.publish_async.call_args
+        assert call_args[0] == ("t1", {"id": 1}, None, None, None)
+
+    def test_wait_all_forwards_target_worker_during_refill(self):
+        """target_worker must also survive the sliding-window refill branch."""
+        client = _make_mock_client()
+        rh1 = MagicMock(spec=ResultHandler)
+        rh2 = MagicMock(spec=ResultHandler)
+        rh3 = MagicMock(spec=ResultHandler)
+        client.publish_async.side_effect = [rh1, rh2, rh3]
+        result_r1 = [
+            {"sub-a": _make_success_result("sub-a", "msg-0")},
+            {"sub-b": _make_success_result("sub-b", "msg-1")},
+        ]
+        result_r2 = [{"ctx-holder": _make_success_result("ctx-holder", "msg-2")}]
+        client.wait_all.side_effect = [result_r1, result_r2]
+
+        batch = GPMQAsyncBatchHandler(client, queue_size=2)
+        batch.send_message("t0", {"id": 0})
+        batch.send_message("t1", {"id": 1})
+        batch.send_message(
+            "t2", {"id": 2}, target_subscribers="ctx-holder", target_worker=0
+        )
+        batch.wait_all()
+
+        # Third publish_async call (index 2) is the refill of t2, carries tw=0
+        refill_call = client.publish_async.call_args_list[2]
+        assert refill_call[0] == ("t2", {"id": 2}, None, "ctx-holder", 0)
 
 
 class TestGPMQAsyncBatchHandlerPublishFailure:

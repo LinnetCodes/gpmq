@@ -33,10 +33,11 @@ logger: Any = None
 # Worker-level heartbeat throttle: minimum seconds between heartbeat
 # flushes to Redis. Distinct from the ``heartbeat_interval`` config, which
 # is NOT the write cadence — it is the base for freshness thresholds
-# (stale/zombie detection at heartbeat_interval * 3). Kept below the 5s
-# XREADGROUP block so the worst-case gap between heartbeats
-# (throttle + block = 4 + 5 = 9s, when traffic ends right after a skipped
-# check) stays well under the minimum threshold (5 * 3 = 15s).
+# (stale/zombie detection at heartbeat_interval * 3). Kept above the
+# XREADGROUP block (now ``worker_read_block_ms``, default 1000ms) so the
+# worst-case gap between heartbeats (throttle + block = 4 + 1 = 5s, when
+# traffic ends right after a skipped check) stays well under the minimum
+# threshold (5 * 3 = 15s).
 HEARTBEAT_THROTTLE_SECONDS: float = 4.0
 
 
@@ -88,6 +89,17 @@ class Worker(Process):
         self._cfg_mgr: GPConfigManager | None = None
         self._key_prefix: str = self._config_dict.get("registry_key_prefix", "gpmq:")
         self._read_batch_size: int = self._config_dict.get("worker_read_batch_size", 1)
+        self._read_block_ms: int = int(
+            self._config_dict.get("worker_read_block_ms", 1000)
+        )
+        # Own-PEL read cursor for step ① (in-process; resets to "0" on
+        # restart, where skipped leftovers are simply re-skipped).
+        self._pel_cursor: str = "0"
+        self._my_slot: int = self._parse_worker_sn()
+        # Liveness snapshot of sibling workers (worker_id -> last heartbeat
+        # epoch), refreshed on the heartbeat throttle cadence (Task 7).
+        self._liveness: dict[str, float] = {}
+        self._liveness_cache_at: float = 0.0
 
         # Set by ``run()`` or injected in tests
         self._redis: Any = None
@@ -129,6 +141,165 @@ class Worker(Process):
         """
         _suffix = self._worker_id.rsplit("-worker-", 1)[-1]
         return int(_suffix)
+
+    @staticmethod
+    def _parse_target_worker(fields: dict[str, str]) -> Optional[int]:
+        """Parse the sticky-routing slot from raw stream fields.
+
+        Returns:
+            0-based slot int, or None when absent/empty/malformed — a
+            malformed key degrades to group load balancing (safe side).
+            Negative values are malformed (the Message field is ge=0).
+        """
+        raw = fields.get("target_worker")
+        if raw is None or raw == "":
+            return None
+        try:
+            raw_int = int(raw)
+        except ValueError:
+            return None
+        if raw_int < 0:
+            return None
+        return raw_int
+
+    def _dispatch(self, msg_id: str, fields: dict[str, str]) -> None:
+        """Handler lookup + dispatch, shared by both read sources."""
+        from gpmq.subscriber.handler import HandlerRegistry
+
+        msg_type = fields.get("type", "")
+        handler = HandlerRegistry.get_handler(msg_type)
+        if handler is None:
+            # Not our message type — ACK and skip
+            self._redis.xack(self._stream_name, self._subscriber_name, msg_id)
+            return
+        self._process_message(msg_id, fields, handler)
+
+    def _route_and_process(
+        self, entries: list[tuple[str, dict[str, str]]], *, from_pel: bool
+    ) -> None:
+        """Unified routing decision chain (design §3.2).
+
+        Entries bound for the same target slot are aggregated and handed
+        off in one batched XCLAIM per slot.
+
+        Args:
+            entries: Raw (msg_id, fields) pairs from one xreadgroup call.
+            from_pel: True when read from own PEL via the ① cursor.
+        """
+        claims: dict[int, list[tuple[str, dict[str, str]]]] = {}
+        for msg_id, fields in entries:
+            self._maybe_update_heartbeat()  # D7-a: between every message
+            target_slot = self._parse_target_worker(fields)
+            if target_slot is None:
+                if not from_pel:
+                    self._dispatch(msg_id, fields)
+                # from_pel unrouted leftover: skip — the sweep owns it
+                # (0.11.1 at-most-once ruling; design §3.5 row 4).
+                continue
+            if target_slot == self._my_slot:
+                self._dispatch(msg_id, fields)
+                continue
+            claims.setdefault(target_slot, []).append((msg_id, fields))
+        for slot, batch in claims.items():
+            self._handoff_entries(slot, batch)
+
+    def _consumer_for_slot(self, slot: int) -> str:
+        """Consumer name of the sibling worker owning *slot*.
+
+        Single-machine assumption (design D3): siblings share my hostname.
+        """
+        prefix = self._worker_id.rsplit("-worker-", 1)[0]
+        return f"{self._subscriber_name}:{prefix}-worker-{slot}"
+
+    @staticmethod
+    def _heartbeat_epoch(info: dict[str, Any]) -> float:
+        """Coerce one registry entry's ``last_heartbeat`` to a float epoch.
+
+        A malformed entry (non-numeric value) coerces to 0.0 — that one
+        worker reads as dead, the same conservative judgment as the
+        subscriber-side ``_routed_owner_alive`` — instead of raising and
+        aborting the whole liveness snapshot (which would judge every
+        slot dead for one bad entry).
+        """
+        try:
+            return float(info.get("last_heartbeat", 0) or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _target_alive(self, slot: int) -> bool:
+        """Liveness gate: is the sibling at *slot* heartbeat-fresh?
+
+        Snapshot of the worker registry is cached for one heartbeat-
+        throttle window; the threshold is ``heartbeat_interval * 3`` (the
+        same definition as zombie detection, design D6-a). A liveness
+        read failure counts as dead (D1 fallback processes locally).
+        """
+        now = time.time()
+        if now >= self._liveness_cache_at + HEARTBEAT_THROTTLE_SECONDS:
+            try:
+                workers = self._redis.get_consumer_group_workers(self._subscriber_name)
+                self._liveness = {
+                    str(info.get("worker_id", "")): self._heartbeat_epoch(info)
+                    for info in workers
+                }
+                self._liveness_cache_at = now
+            except Exception:
+                logger.error(
+                    "Liveness read failed for worker {} routing to slot {}\n{}",
+                    self._worker_id,
+                    slot,
+                    traceback.format_exc(),
+                )
+                return False
+        prefix = self._worker_id.rsplit("-worker-", 1)[0]
+        last_hb = self._liveness.get(f"{prefix}-worker-{slot}")
+        if last_hb is None:
+            return False
+        threshold = float(self._config_dict.get("heartbeat_interval", 15)) * 3
+        return (now - last_hb) <= threshold
+
+    def _handoff_entries(
+        self, slot: int, batch: list[tuple[str, dict[str, str]]]
+    ) -> None:
+        """Move mis-routed entries to the target slot's consumer (XCLAIM).
+
+        Alive target: one batched XCLAIM (min_idle 0 — entries were just
+        delivered, the claim always succeeds); the target picks them up
+        on its next ① poll (<= one read-block cycle when idle, ~0 under
+        load). Dead target or claim failure: D1 fallback — process
+        locally, availability over context purity (design §3.2/§3.3).
+        """
+        if self._target_alive(slot):
+            try:
+                self._redis.xclaim(
+                    self._stream_name,
+                    self._subscriber_name,
+                    self._consumer_for_slot(slot),
+                    0,
+                    [msg_id for msg_id, _ in batch],
+                )
+                logger.debug(
+                    "Worker {} handed off {} routed entr(y/ies) to slot {}",
+                    self._worker_id,
+                    len(batch),
+                    slot,
+                )
+                return
+            except Exception:
+                logger.error(
+                    "Worker {} XCLAIM to slot {} failed, falling back to "
+                    "local processing\n{}",
+                    self._worker_id,
+                    slot,
+                    traceback.format_exc(),
+                )
+        for msg_id, fields in batch:
+            # D7-a: absorbing a dead target's batch can run long with a
+            # big worker_read_batch_size and slow handlers — keep this
+            # worker's own heartbeat fresh between entries (same contract
+            # as _route_and_process).
+            self._maybe_update_heartbeat()
+            self._dispatch(msg_id, fields)
 
     def prepare_worker_context(self, context: dict[str, Any]) -> None:
         if self._cfg_mgr is None:
@@ -277,19 +448,48 @@ class Worker(Process):
     # ------------------------------------------------------------------
 
     def _read_and_process(self) -> None:
-        """Read one batch of messages from the consumer group and process."""
-        from gpmq.subscriber.handler import HandlerRegistry
+        """One read round: drain own PEL first (①), then read new (②).
 
+        ① returns handoff entries claimed to this consumer plus (right
+        after a restart) crash leftovers; unrouted leftovers are skipped
+        by the advancing cursor. Drain-first: while ① yields entries we
+        do not issue the blocking ② read.
+        """
+        try:
+            pending = self._redis.xreadgroup(
+                group=self._subscriber_name,
+                consumer=self.consumer_name,
+                streams={self._stream_name: self._pel_cursor},
+                count=self._read_batch_size,
+                block_ms=None,
+            )
+        except Exception:
+            logger.error(
+                "Own-PEL poll failed for worker {} (subscriber {}, consumer {})\n{}",
+                self._worker_id,
+                self._subscriber_name,
+                self.consumer_name,
+                traceback.format_exc(),
+            )
+            pending = []
+        logger.debug(
+            "Worker {} own-PEL poll returned {} entries",
+            self._worker_id,
+            sum(len(entries) for _, entries in pending),
+        )
+        if pending:
+            for _stream, entries in pending:
+                if entries:
+                    self._pel_cursor = entries[-1][0]
+                    self._route_and_process(entries, from_pel=True)
+                    return  # drain-first: re-poll ① next round
         try:
             messages = self._redis.xreadgroup(
                 group=self._subscriber_name,
                 consumer=self.consumer_name,
                 streams={self._stream_name: ">"},
                 count=self._read_batch_size,
-                block_ms=5000,
-            )
-            logger.debug(
-                f"Read {len(messages)} messages from stream {self._stream_name}"
+                block_ms=self._read_block_ms,
             )
         except Exception:
             logger.error(
@@ -301,22 +501,16 @@ class Worker(Process):
             )
             logger.error("trace back: \n{}", traceback.format_exc())
             return
-
+        logger.debug(
+            "Worker {} new-message read returned {} entries",
+            self._worker_id,
+            sum(len(entries) for _, entries in messages),
+        )
         self._maybe_update_heartbeat()
-
         if not messages:
             return
-
         for _stream, entries in messages:
-            for msg_id, fields in entries:
-                msg_type = fields.get("type", "")
-                handler = HandlerRegistry.get_handler(msg_type)
-                if handler is None:
-                    # Not our message type — ACK and skip
-                    self._redis.xack(self._stream_name, self._subscriber_name, msg_id)
-                    continue
-
-                self._process_message(msg_id, fields, handler)
+            self._route_and_process(entries, from_pel=False)
 
     def _maybe_update_heartbeat(self) -> None:
         """Flush the worker heartbeat (throttled), piggybacking live status.
@@ -485,6 +679,7 @@ class Worker(Process):
                     "correlation_id": fields.get("correlation_id", None),
                     "reply_token": fields.get("reply_token", None),
                     "target_subscribers": target_list,
+                    "target_worker": self._parse_target_worker(fields),
                 }
             )
         except Exception as exc:

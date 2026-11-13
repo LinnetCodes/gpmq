@@ -200,3 +200,6 @@ examples/configs/
 
 # GPMQ runtime artifacts (default audit_db_path writes to cwd; matches any depth)
 gpmq_audit.db
+
+# Superpowers SDD workspace (scratch)
+.superpowers/

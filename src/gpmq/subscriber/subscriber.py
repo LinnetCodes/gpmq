@@ -360,8 +360,23 @@ class Subscriber:
                 count=100,
                 idle_ms=int(idle_seconds * 1000),
             )
+            # One liveness snapshot feeds every exemption check in this
+            # round (was: one registry HGETALL per routed candidate). On
+            # read failure the snapshot stays None and every exemption
+            # in the round evaluates False — at-most-once prevails.
+            workers: list[dict[str, Any]] | None = None
+            if entries:
+                try:
+                    workers = self._redis.get_consumer_group_workers(self.name)
+                except Exception:
+                    logger.error(
+                        "Liveness snapshot failed during abandon scan of {} "
+                        "(routed entries treated as orphaned)\n{}",
+                        self.name,
+                        traceback.format_exc(),
+                    )
             for entry in entries:
-                self._abandon_entry(entry)
+                self._abandon_entry(entry, workers)
         except Exception:
             logger.error(
                 "Orphan PEL scan failed for {}\n{}",
@@ -369,7 +384,9 @@ class Subscriber:
                 traceback.format_exc(),
             )
 
-    def _abandon_entry(self, entry: dict[str, Any]) -> None:
+    def _abandon_entry(
+        self, entry: dict[str, Any], workers: list[dict[str, Any]] | None
+    ) -> None:
         """Abandon one idle PEL entry: audit, notify caller, XACK, warn.
 
         Per-entry order is audit → publish → xack: unblocking the trim
@@ -393,6 +410,14 @@ class Subscriber:
         Args:
             entry: One ``xpending_range`` dict (message_id, consumer,
                 time_since_delivered ms, times_delivered).
+            workers: This round's worker-registry snapshot (one
+                ``get_consumer_group_workers`` read per sweep, shared by
+                every entry; ``None`` when the read failed) — feeds the
+                exemption check.
+
+        A routed entry (envelope ``target_worker``) whose PEL OWNER is
+        heartbeat-fresh is exempted before the chain runs — see
+        :meth:`_routed_owner_alive`.
         """
         redis = self._redis
         assert redis is not None  # caller (_maybe_abandon_pending) guards this
@@ -420,6 +445,25 @@ class Subscriber:
                 message_id,
                 traceback.format_exc(),
             )
+
+        # Sticky-routing exemption (design §3.4): a routed entry whose PEL
+        # OWNER worker is heartbeat-fresh is queued, not orphaned — its
+        # owner will process or re-handoff it via the own-PEL poll. The
+        # liveness key is the OWNER (entry consumer), NOT the envelope's
+        # target: a stranded mis-route in a dead claimer's PEL must not be
+        # exempt (nobody would ever touch it again). Skipping the whole
+        # chain means no audit, no ABANDONED receipt, no XACK — the
+        # waiting caller keeps waiting and the entry stays queued.
+        if fields and self._routed_owner_alive(
+            redis, entry.get("consumer", ""), fields, workers
+        ):
+            logger.debug(
+                "Exempted routed PEL entry {} of {} from abandon (owner {} alive)",
+                message_id,
+                self.name,
+                entry.get("consumer", "?"),
+            )
+            return
 
         process_result = ProcessResult(
             message_id=message_id,
@@ -455,8 +499,7 @@ class Subscriber:
                 redis.publish(channel, process_result.model_dump(mode="json"))
             except Exception:
                 logger.error(
-                    "Failed to publish ABANDONED receipt for {} "
-                    "(xack still runs)\n{}",
+                    "Failed to publish ABANDONED receipt for {} (xack still runs)\n{}",
                     message_id,
                     traceback.format_exc(),
                 )
@@ -471,6 +514,48 @@ class Subscriber:
             entry.get("times_delivered", "?"),
             detail,
         )
+
+    def _routed_owner_alive(
+        self,
+        redis: "RedisAdapter",
+        consumer: str,
+        fields: dict[str, str],
+        workers: list[dict[str, Any]] | None,
+    ) -> bool:
+        """Whether *fields* route and *consumer*'s worker is fresh.
+
+        Args:
+            redis: Live adapter (retained for the sweep call chain; the
+                liveness data itself comes from the round snapshot).
+            consumer: PEL owner consumer name from ``xpending_range``.
+            fields: Stream entry fields (already read for the log line).
+            workers: This round's worker-registry snapshot, fetched once
+                by the caller; ``None`` means the snapshot read failed —
+                no exemption that round.
+
+        Returns:
+            True only for a routed entry whose owner worker heartbeat is
+            within ``heartbeat_interval * 3``. Any doubt (unreadable
+            registry, unknown consumer, foreign naming, read failure)
+            returns False — at-most-once prevails over protection.
+        """
+        raw = fields.get("target_worker")
+        if not raw:
+            return False
+        prefix = f"{self.name}:"
+        if not consumer.startswith(prefix):
+            return False
+        if workers is None:
+            return False
+        worker_id = consumer[len(prefix) :]
+        for info in workers:
+            if info.get("worker_id") == worker_id:
+                try:
+                    last_hb = float(info.get("last_heartbeat", 0) or 0)
+                except (TypeError, ValueError):
+                    return False
+                return (time.time() - last_hb) <= self._config.heartbeat_interval * 3
+        return False
 
     def _get_audit(self) -> "AuditStore":
         """Return the subscriber-process audit store, connecting lazily.

@@ -8,6 +8,7 @@
 
 - **多种消息模式** — 同步、异步、发后即忘（fire-and-forget）、批量滑动窗口并发、消息转发
 - **定向发布** — 通过 `target_subscribers` 把消息投递给指定的一个或多个订阅者；已注册但不在列表中的订阅者会丢弃它
+- **粘性路由** — 通过 `target_worker` 把消息钉到指定的 worker 槽位（须显式指定唯一 `target_subscriber`），worker 无需重复载入昂贵的按槽上下文
 - **可配置的持久运行方法** — 通过 `@run_forever_method` 自定义订阅者的主循环
 - **Redis Streams 后端** — 基于 Consumer Group 的可靠消息投递
 - **多进程 Worker** — 每个订阅者可配置独立 Worker 数量
@@ -101,7 +102,7 @@ redis_port: 6379
 redis_password: ""
 stream_name: "gpmq:messages"
 
-heartbeat_interval: 10
+heartbeat_interval: 15
 ```
 
 **publisher/main.yaml：**
@@ -285,9 +286,9 @@ GPMQ 采用两层配置机制：**公共配置**（`gpmq/common.yaml`）提供�
 | `redis_password` | str | `""` | Redis 密码 |
 | `redis_max_retries` | int | `3` | 最大连接重试次数 |
 | `redis_retry_delay` | float | `1.0` | 重试基础延迟（秒） |
-| `redis_socket_timeout` | float | `10.0` | Redis socket 超时（秒）；必须大于 worker 读取阻塞时长（5s）——避免 redis-py ≥6 的默认 5s 与空读竞态触发透明重试 |
+| `redis_socket_timeout` | float | `10.0` | Redis socket 超时（秒）；必须大于 worker 读取阻塞时长（`worker_read_block_ms`，默认 1s）——避免 redis-py 与空读竞态触发透明重试 |
 | `stream_name` | str | `"gpmq:messages"` | Redis Stream 名称 |
-| `heartbeat_interval` | int | `10` | 心跳间隔（秒） |
+| `heartbeat_interval` | int | `15` | 心跳间隔（秒）（失活/僵尸判定阈值 = ×3） |
 | `registry_key_prefix` | str | `"gpmq:"` | Redis 键前缀（自动追加 `:`） |
 | `audit_db_path` | str | `"gpmq_audit.db"` | SQLite 审计数据库路径 |
 | `enable_audit` | bool | `True` | 启用审计日志 |
@@ -324,6 +325,7 @@ log_category: "my_app_publisher"
 | `handlers` | list[HandlerConfig] | *（必填）* | 消息处理器配置列表 |
 | `workers` | int | `1` | Worker 进程数量 |
 | `worker_read_batch_size` | int | `1` | 每个 Worker 每轮 `XREADGROUP` 读取的消息数量 |
+| `worker_read_block_ms` | int | `1000` | Worker 读取新消息的 `XREADGROUP` 阻塞时长（毫秒）（自有 PEL 轮询为非阻塞）；决定错投转交的领取延迟上界 |
 | `subscriber_timeout` | float | `60.0` | 单个订阅者处理超时（秒） |
 | `embedded_publisher` | str \| null | `null` | 内嵌 Publisher 配置路径（用于消息转发） |
 | `worker_context_processor` | str \| null | `null` | Worker 上下文初始化函数的导入路径 |

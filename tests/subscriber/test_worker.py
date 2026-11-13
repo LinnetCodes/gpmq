@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 import types
 from datetime import datetime, timezone
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -48,12 +49,15 @@ def _make_stream_message(
     msg_type: str = "test_type",
     payload: dict | None = None,
     reply_token: str | None = "tok-1",
+    target_worker: str | None = None,
 ) -> tuple[str, dict[str, str]]:
     """Create a raw Redis Stream message tuple.
 
     By default the envelope carries a reply_token, mirroring what
     ``Publisher.publish_message`` writes (the collect-results path);
     pass ``reply_token=None`` to simulate the fire-and-forget send path.
+    Pass ``target_worker`` (a string slot number) to set the sticky-routing
+    field on the envelope.
     """
     fields = {
         "type": msg_type,
@@ -63,6 +67,8 @@ def _make_stream_message(
     }
     if reply_token is not None:
         fields["reply_token"] = reply_token
+    if target_worker is not None:
+        fields["target_worker"] = target_worker
     return (msg_id, fields)
 
 
@@ -1460,7 +1466,9 @@ class TestWorkerReadBatch:
         mock_handler = MagicMock()
         try:
             HandlerRegistry._handlers["order_created"] = mock_handler
-            # Return a batch of 3 messages.
+            # Return a batch of 3 messages. The read loop is two-step
+            # (① own-PEL poll, then ② new `>` read): a fresh consumer has
+            # an empty PEL, so ① returns [] and the batch arrives via ②.
             m1_id, m1_fields = _make_stream_message(
                 msg_id="m1", msg_type="order_created"
             )
@@ -1470,11 +1478,14 @@ class TestWorkerReadBatch:
             m3_id, m3_fields = _make_stream_message(
                 msg_id="m3", msg_type="order_created"
             )
-            worker._redis.xreadgroup.return_value = [
-                (
-                    "gpmq:messages",
-                    [(m1_id, m1_fields), (m2_id, m2_fields), (m3_id, m3_fields)],
-                ),
+            worker._redis.xreadgroup.side_effect = [
+                [],
+                [
+                    (
+                        "gpmq:messages",
+                        [(m1_id, m1_fields), (m2_id, m2_fields), (m3_id, m3_fields)],
+                    ),
+                ],
             ]
             worker._read_and_process()
 
@@ -1497,6 +1508,7 @@ class TestWorkerReadBatch:
         try:
             HandlerRegistry._handlers["order_created"] = mock_handler
             # First message: poison (invalid payload JSON). Second: valid.
+            # Two-step read loop: ① fresh-consumer PEL poll -> [], ② batch.
             poison_fields = {
                 "type": "order_created",
                 "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -1506,8 +1518,9 @@ class TestWorkerReadBatch:
             good_id, good_fields = _make_stream_message(
                 msg_id="good-1", msg_type="order_created"
             )
-            worker._redis.xreadgroup.return_value = [
-                ("gpmq:messages", [("bad-1", poison_fields), (good_id, good_fields)]),
+            worker._redis.xreadgroup.side_effect = [
+                [],
+                [("gpmq:messages", [("bad-1", poison_fields), (good_id, good_fields)])],
             ]
             worker._read_and_process()
 
@@ -1622,3 +1635,264 @@ class TestWorkerLiveStatus:
         worker._last_heartbeat = _time.time()
         worker._read_and_process()
         assert worker._redis.update_worker_heartbeat.call_count == 1
+
+
+class TestWorkerLoopRestructure:
+    """① own-PEL poll (cursor, drain-first) + unrouted leftover skip."""
+
+    def _make_worker(self, mock_redis, extra_config: dict[str, Any] | None = None):
+        from gpmq.subscriber.worker import Worker
+
+        config_dict = _make_subscriber_config(workers=2)
+        if extra_config:
+            config_dict.update(extra_config)
+        w = Worker(
+            subscriber_name="test-subscriber",
+            stream_name="gpmq:messages",
+            message_types=["test_type"],
+            worker_id="test-subscriber-host-worker-0",
+            hostname="host",
+            config_dict=config_dict,
+        )
+        w._redis = mock_redis
+        return w
+
+    def test_pel_poll_uses_cursor_and_advances(self):
+        w = self._make_worker(MagicMock())
+        w._redis.xreadgroup.side_effect = [
+            [("gpmq:messages", [("1-1", _make_stream_message()[1])])],  # ① hit
+            [],  # ① empty next round
+            [],  # ②
+        ]
+        w._read_and_process()
+        first_call = w._redis.xreadgroup.call_args_list[0]
+        assert first_call.kwargs["streams"] == {"gpmq:messages": "0"}
+        assert w._pel_cursor == "1-1"
+        w._read_and_process()
+        second = w._redis.xreadgroup.call_args_list[1]
+        assert second.kwargs["streams"] == {"gpmq:messages": "1-1"}  # cursor advanced
+
+    def test_pel_hit_skips_new_read_drain_first(self):
+        w = self._make_worker(MagicMock())
+        w._redis.xreadgroup.side_effect = [
+            [("gpmq:messages", [("1-1", _make_stream_message()[1])])],
+        ]
+        w._read_and_process()
+        assert w._redis.xreadgroup.call_count == 1  # no blocking `>` read
+
+    def test_new_read_uses_default_block(self):
+        """No worker_read_block_ms in config: ② falls back to 1000ms."""
+        w = self._make_worker(MagicMock())
+        w._redis.xreadgroup.side_effect = [[], [("gpmq:messages", [])]]
+        w._read_and_process()
+        assert w._redis.xreadgroup.call_args_list[1].kwargs["block_ms"] == 1000
+
+    def test_new_read_propagates_configured_block_ms(self):
+        """worker_read_block_ms from the config reaches the ② blocking read."""
+        w = self._make_worker(MagicMock(), {"worker_read_block_ms": 250})
+        w._redis.xreadgroup.side_effect = [[], [("gpmq:messages", [])]]
+        w._read_and_process()
+        assert w._redis.xreadgroup.call_args_list[1].kwargs["block_ms"] == 250
+
+    def test_pel_unrouted_leftover_skipped_not_processed(self):
+        """Non-routed crash leftover in own PEL: skip (0.11.1 ruling)."""
+        w = self._make_worker(MagicMock())
+        w._redis.xreadgroup.side_effect = [
+            [("gpmq:messages", [("1-1", _make_stream_message()[1])])],
+        ]
+        with patch.object(w, "_process_message") as pm:
+            w._read_and_process()
+        pm.assert_not_called()
+        w._redis.xack.assert_not_called()  # left for the sweep
+
+    def test_new_unrouted_still_processed(self):
+        w = self._make_worker(MagicMock())
+        fields = _make_stream_message()[1]
+        w._redis.xreadgroup.side_effect = [
+            [],
+            [("gpmq:messages", [("1-1", fields)])],
+        ]
+        with patch.object(w, "_dispatch") as disp:
+            w._read_and_process()
+        disp.assert_called_once_with("1-1", fields)
+
+    def test_malformed_target_worker_treated_as_unrouted(self):
+        from gpmq.subscriber.worker import Worker as W
+
+        assert W._parse_target_worker({}) is None
+        assert W._parse_target_worker({"target_worker": ""}) is None
+        assert W._parse_target_worker({"target_worker": "abc"}) is None
+        # Negative slot keys are malformed (Message.target_worker is ge=0):
+        # degrade to unrouted rather than routing to a phantom worker.
+        assert W._parse_target_worker({"target_worker": "-1"}) is None
+        assert W._parse_target_worker({"target_worker": "3"}) == 3
+
+
+class TestStickyHandoff:
+    """Mis-routed entries: claim to target / D1 fallback."""
+
+    def setup_method(self):
+        # _dispatch reaches _process_message only when a handler for the
+        # message type is registered; several tests below assert on a
+        # patched _process_message, so register one for "test_type".
+        from gpmq.subscriber.handler import HandlerRegistry
+
+        HandlerRegistry._handlers["test_type"] = MagicMock()
+
+    def teardown_method(self):
+        from gpmq.subscriber.handler import HandlerRegistry
+
+        HandlerRegistry._handlers.pop("test_type", None)
+
+    def _make_worker(self, mock_redis, worker_id="test-subscriber-host-worker-0"):
+        from gpmq.subscriber.worker import Worker
+
+        w = Worker(
+            subscriber_name="test-subscriber",
+            stream_name="gpmq:messages",
+            message_types=["test_type"],
+            worker_id=worker_id,
+            hostname="host",
+            config_dict=_make_subscriber_config(workers=2),
+        )
+        w._redis = mock_redis
+        return w
+
+    def test_consumer_for_slot_resolves_sibling(self):
+        w = self._make_worker(MagicMock())
+        assert (
+            w._consumer_for_slot(1) == "test-subscriber:test-subscriber-host-worker-1"
+        )
+
+    def test_misrouted_claimed_to_alive_target(self):
+        w = self._make_worker(MagicMock())  # my slot 0, target slot 1
+        w._redis.get_consumer_group_workers.return_value = [
+            {
+                "worker_id": "test-subscriber-host-worker-1",
+                "last_heartbeat": str(time.time()),
+            },
+        ]
+        fields = _make_stream_message(target_worker="1")[1]
+        w._route_and_process([("1-1", fields)], from_pel=False)
+        w._redis.xclaim.assert_called_once()
+        args = w._redis.xclaim.call_args
+        assert args.args[2] == "test-subscriber:test-subscriber-host-worker-1"
+        assert args.args[4] == ["1-1"]  # min_idle=0, ids
+        # NOT processed locally, NOT acked
+        w._redis.xack.assert_not_called()
+
+    def test_batched_claims_merge_per_target(self):
+        w = self._make_worker(MagicMock())
+        w._redis.get_consumer_group_workers.return_value = [
+            {
+                "worker_id": "test-subscriber-host-worker-1",
+                "last_heartbeat": str(time.time()),
+            },
+        ]
+        entries = [
+            ("1-1", _make_stream_message(target_worker="1")[1]),
+            ("1-2", _make_stream_message(target_worker="1")[1]),
+        ]
+        w._route_and_process(entries, from_pel=False)
+        assert w._redis.xclaim.call_count == 1  # one call, two ids
+        assert w._redis.xclaim.call_args.args[4] == ["1-1", "1-2"]
+
+    def test_dead_target_processes_locally_d1(self):
+        w = self._make_worker(MagicMock())
+        w._redis.get_consumer_group_workers.return_value = []  # target absent
+        fields = _make_stream_message(target_worker="1")[1]
+        with patch.object(w, "_process_message") as pm:
+            w._route_and_process([("1-1", fields)], from_pel=False)
+        pm.assert_called_once()  # D1 fallback
+        w._redis.xclaim.assert_not_called()
+
+    def test_stale_heartbeat_counts_as_dead(self):
+        w = self._make_worker(MagicMock())
+        w._redis.get_consumer_group_workers.return_value = [
+            {
+                "worker_id": "test-subscriber-host-worker-1",
+                "last_heartbeat": str(time.time() - 999),
+            },
+        ]
+        fields = _make_stream_message(target_worker="1")[1]
+        with patch.object(w, "_process_message") as pm:
+            w._route_and_process([("1-1", fields)], from_pel=False)
+        pm.assert_called_once()
+
+    def test_pel_routed_to_me_processed(self):
+        """Own-PEL entry routed to my slot: processed (restart inheritance)."""
+        w = self._make_worker(MagicMock())
+        fields = _make_stream_message(target_worker="0")[1]
+        with patch.object(w, "_process_message") as pm:
+            w._route_and_process([("1-1", fields)], from_pel=True)
+        pm.assert_called_once()
+
+    def test_pel_stranded_other_target_rehanded(self):
+        """C-case: entry routed elsewhere, stranded in my PEL -> re-handoff."""
+        w = self._make_worker(MagicMock())
+        w._redis.get_consumer_group_workers.return_value = [
+            {
+                "worker_id": "test-subscriber-host-worker-1",
+                "last_heartbeat": str(time.time()),
+            },
+        ]
+        fields = _make_stream_message(target_worker="1")[1]
+        w._route_and_process([("1-1", fields)], from_pel=True)
+        w._redis.xclaim.assert_called_once()
+
+    def test_claim_failure_falls_back_local(self):
+        w = self._make_worker(MagicMock())
+        w._redis.get_consumer_group_workers.return_value = [
+            {
+                "worker_id": "test-subscriber-host-worker-1",
+                "last_heartbeat": str(time.time()),
+            },
+        ]
+        w._redis.xclaim.side_effect = RuntimeError("boom")
+        fields = _make_stream_message(target_worker="1")[1]
+        with patch.object(w, "_process_message") as pm:
+            w._route_and_process([("1-1", fields)], from_pel=False)
+        pm.assert_called_once()
+
+    def test_malformed_registry_entry_judged_dead_without_poisoning(self):
+        """One malformed registry entry must not abort the whole liveness
+        snapshot: only the malformed worker reads as dead (coerced to
+        epoch 0.0); a fresh sibling keeps its slot alive and still gets
+        the XCLAIM handoff."""
+        w = self._make_worker(MagicMock())
+        w._redis.get_consumer_group_workers.return_value = [
+            # Non-numeric last_heartbeat: pre-fix this raised inside the
+            # comprehension -> outer except -> ALL slots judged dead.
+            {"worker_id": "test-subscriber-host-worker-1", "last_heartbeat": "oops"},
+            {
+                "worker_id": "test-subscriber-host-worker-2",
+                "last_heartbeat": str(time.time()),
+            },
+        ]
+        entries = [
+            ("1-1", _make_stream_message(target_worker="1")[1]),
+            ("1-2", _make_stream_message(target_worker="2")[1]),
+        ]
+        with patch.object(w, "_process_message") as pm:
+            w._route_and_process(entries, from_pel=False)
+        pm.assert_called_once()  # malformed slot 1 -> dead -> D1 local
+        # Fresh slot 2 survived the snapshot: claimed, not processed.
+        assert w._redis.xclaim.call_count == 1
+        assert w._redis.xclaim.call_args.args[4] == ["1-2"]
+
+    def test_d1_fallback_flushes_heartbeat_per_entry(self):
+        """D1 fallback loop must flush this worker's own heartbeat between
+        absorbed entries (D7-a): a dead target's batch with slow handlers
+        must not let the heartbeat go stale past the liveness threshold."""
+        w = self._make_worker(MagicMock())
+        w._redis.get_consumer_group_workers.return_value = []  # target dead
+        batch = [
+            ("1-1", _make_stream_message(target_worker="1")[1]),
+            ("1-2", _make_stream_message(target_worker="1")[1]),
+        ]
+        with (
+            patch.object(w, "_maybe_update_heartbeat") as hb,
+            patch.object(w, "_process_message"),
+        ):
+            w._handoff_entries(1, batch)
+        assert hb.call_count == 2  # one flush per absorbed entry

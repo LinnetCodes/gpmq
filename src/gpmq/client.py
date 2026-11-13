@@ -135,6 +135,7 @@ class GPMQClient:
         correlation_id: Optional[str] = None,
         timeout: Optional[float] = None,
         target_subscribers: Optional[Union[str, list[str]]] = None,
+        target_worker: Optional[int] = None,
     ) -> dict[str, ProcessResult]:
         """Publish message and synchronously wait for results.
 
@@ -148,12 +149,19 @@ class GPMQClient:
             target_subscribers: Optional subscriber name or list of names.
                 Only these subscribers will process the message; others
                 discard it. None (default) broadcasts to all matching.
+            target_worker: Optional 0-based worker slot for sticky routing
+                within the single target subscriber; requires exactly one
+                target_subscriber.
 
         Returns:
             Dict mapping subscriber_name to ProcessResult
         """
         handler = self.publish_async(
-            message_type, payload, correlation_id, target_subscribers
+            message_type,
+            payload,
+            correlation_id,
+            target_subscribers,
+            target_worker,
         )
         effective_timeout = timeout or getattr(self._config, "publish_timeout", None)
         results = handler.wait(timeout=effective_timeout)
@@ -166,6 +174,7 @@ class GPMQClient:
         payload: dict[str, Any],
         correlation_id: Optional[str] = None,
         target_subscribers: Optional[Union[str, list[str]]] = None,
+        target_worker: Optional[int] = None,
     ) -> ResultHandler:
         """Publish message without waiting for results.
 
@@ -176,6 +185,9 @@ class GPMQClient:
             target_subscribers: Optional subscriber name or list of names.
                 Only these subscribers will process the message; others
                 discard it. None (default) broadcasts to all matching.
+            target_worker: Optional 0-based worker slot for sticky routing
+                within the single target subscriber; requires exactly one
+                target_subscriber.
 
         Returns:
             ResultHandler for collecting results later
@@ -189,6 +201,7 @@ class GPMQClient:
             payload=payload,
             correlation_id=correlation_id,
             target_subscribers=targets,
+            target_worker=target_worker,
         )
         _, handler = self._publisher.publish_message(message)
         return handler
@@ -199,6 +212,7 @@ class GPMQClient:
         payload: dict[str, Any],
         correlation_id: Optional[str] = None,
         target_subscribers: Optional[Union[str, list[str]]] = None,
+        target_worker: Optional[int] = None,
     ) -> Optional[str]:
         """Fire-and-forget publish: send message without collecting results.
 
@@ -211,6 +225,9 @@ class GPMQClient:
             correlation_id: Optional correlation ID for message chains
             target_subscribers: Optional subscriber name or list of names.
                 None (default) broadcasts to all matching.
+            target_worker: Optional 0-based worker slot for sticky routing
+                within the single target subscriber; requires exactly one
+                target_subscriber.
 
         Returns:
             Redis-generated message ID for logging/tracking, or None when
@@ -226,6 +243,7 @@ class GPMQClient:
             payload=payload,
             correlation_id=correlation_id,
             target_subscribers=targets,
+            target_worker=target_worker,
         )
         return self._publisher.send_message(message)
 

@@ -7,7 +7,7 @@ from unittest.mock import ANY, MagicMock
 import pytest
 
 from gpmq.config import GPMQConfig
-from gpmq.exceptions import InvalidTargetSubscriberError
+from gpmq.exceptions import InvalidTargetSubscriberError, InvalidTargetWorkerError
 from gpmq.models.message import Message
 from gpmq.publisher.publisher import Publisher
 
@@ -507,6 +507,115 @@ class TestPublishRequireSubscriber:
         mock_config.publish_require_subscriber = True
         mock_redis.get_registered_subscribers.return_value = []
         assert publisher.send_message(_make_message()) is None
+        mock_redis.xadd.assert_not_called()
+
+
+class TestTargetWorkerValidation:
+    """Sticky-routing validation rules (design §2.1)."""
+
+    def test_mutex_rejects_missing_target_subscribers(self, publisher, mock_redis):
+        """target_worker without explicit target_subscribers must be rejected."""
+        mock_redis.get_active_subscribers.return_value = []
+        msg = _make_message("task")
+        msg.target_worker = 1
+
+        with pytest.raises(InvalidTargetWorkerError, match="exactly one"):
+            publisher.publish_message(msg)
+
+        mock_redis.xadd.assert_not_called()
+
+    def test_mutex_rejects_multiple_target_subscribers(self, publisher, mock_redis):
+        """target_worker with more than one target_subscriber must be rejected."""
+        mock_redis.get_subscriber_info.return_value = {"message_types": ["task"]}
+        msg = _make_message("task")
+        msg.target_worker = 1
+        msg.target_subscribers = ["a", "b"]
+
+        with pytest.raises(InvalidTargetWorkerError, match="exactly one"):
+            publisher.publish_message(msg)
+
+        mock_redis.xadd.assert_not_called()
+
+    def test_range_rejects_slot_beyond_workers(self, publisher, mock_redis):
+        """Slot >= the target's registered worker count must be rejected."""
+        mock_redis.get_subscriber_info.return_value = {
+            "message_types": ["task"],
+            "workers": 4,
+        }
+        msg = _make_message("task")
+        msg.target_worker = 4
+        msg.target_subscribers = ["ctx-holder"]
+
+        with pytest.raises(InvalidTargetWorkerError, match="out of range"):
+            publisher.publish_message(msg)
+
+        mock_redis.xadd.assert_not_called()
+
+    def test_range_rejects_missing_workers_info(self, publisher, mock_redis):
+        """Subscriber info without a usable 'workers' count must be rejected."""
+        mock_redis.get_subscriber_info.return_value = {"message_types": ["task"]}
+        msg = _make_message("task")
+        msg.target_worker = 0
+        msg.target_subscribers = ["ctx-holder"]
+
+        with pytest.raises(InvalidTargetWorkerError, match="workers"):
+            publisher.publish_message(msg)
+
+        mock_redis.xadd.assert_not_called()
+
+    def test_valid_routed_publish_writes_envelope(self, publisher, mock_redis):
+        """A valid sticky route serializes target_worker as a string field."""
+        mock_redis.get_subscriber_info.return_value = {
+            "message_types": ["task"],
+            "workers": 8,
+        }
+        mock_redis.xadd.return_value = "555-0"
+        msg = _make_message("task")
+        msg.target_worker = 3
+        msg.target_subscribers = ["ctx-holder"]
+
+        _, handler = publisher.publish_message(msg)
+
+        fields = mock_redis.xadd.call_args[0][1]
+        assert fields["target_worker"] == "3"
+
+    def test_unrouted_message_has_no_field(self, publisher, mock_redis):
+        """No target_worker set -> no target_worker envelope field."""
+        mock_redis.xadd.return_value = "556-0"
+
+        publisher.send_message(_make_message())
+
+        fields = mock_redis.xadd.call_args[0][1]
+        assert "target_worker" not in fields
+
+    def test_send_message_validates_too(self, publisher, mock_redis):
+        """send_message must apply the same mutex rule as publish_message."""
+        msg = _make_message("task")
+        msg.target_worker = 2
+
+        with pytest.raises(InvalidTargetWorkerError):
+            publisher.send_message(msg)
+
+        mock_redis.xadd.assert_not_called()
+
+    def test_gate_on_target_worker_still_raises_both_paths(
+        self, publisher, mock_redis, mock_config
+    ):
+        """With the retention gate ON, both paths raise instead of skipping.
+
+        Pins the precedence fixed in review: usage errors (design §2.1
+        mutex rule) are validated BEFORE the publish_require_subscriber
+        gate in both publish_message and send_message.
+        """
+        mock_config.publish_require_subscriber = True
+        msg = _make_message("task")
+        msg.target_worker = 1
+
+        with pytest.raises(InvalidTargetWorkerError, match="exactly one"):
+            publisher.publish_message(msg)
+        with pytest.raises(InvalidTargetWorkerError, match="exactly one"):
+            publisher.send_message(msg)
+
         mock_redis.xadd.assert_not_called()
 
 

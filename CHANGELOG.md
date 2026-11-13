@@ -7,6 +7,76 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.12.0] - 2026-11-13
+
+### Added
+
+- **Sticky routing (`target_worker`): a publisher can pin each message to a
+  specific 0-based worker slot inside one subscriber, so workers holding
+  expensive reusable context load it once and keep it hot.** `Message` gains
+  an optional `target_worker` field; `GPMQClient.publish` / `publish_async`
+  / `send` and batch `send_message` all accept it (appended at the end of
+  the signature — existing positional calls are unaffected). Omitting it
+  changes nothing: delivery stays group load-balanced as before. When set,
+  `target_subscribers` must explicitly name exactly one subscriber (a bare
+  `str` counts as one), and the slot must fit that subscriber's registered
+  worker count (`0 <= target_worker < workers`; a missing worker count is
+  rejected too, fail-fast). Both violations raise the new
+  `InvalidTargetWorkerError` (re-exported from the `gpmq` package root);
+  batch `send_message` checks the shape rules locally **at queue time** so
+  a usage error fails before the first message is in flight, while
+  range/registration checks stay at publish time (they need Redis).
+  Worker-side handoff: a mis-delivered routed entry is claimed over to the
+  target slot's consumer via XCLAIM behind a liveness gate (target worker
+  heartbeat fresher than `heartbeat_interval * 3`); a dead target degrades
+  to local processing on the receiving worker, and routed messages within
+  a slot keep stream-ID order except during such degraded periods. The
+  orphan sweep now exempts routed PEL entries whose **owner** worker is
+  still alive — queued work is no longer falsely abandoned while its
+  worker lives; once the owner is dead the entry still terminates as
+  ABANDONED (idle >= `pel_abandon_idle_seconds`) and a still-waiting
+  caller receives the receipt. Workers restart under deterministic
+  consumer names and automatically inherit their queued routed entries:
+  an interrupted routed message is reprocessed after restart — **at
+  least-once for routed entries, so handlers receiving routed traffic
+  must be idempotent** (non-routed messages keep the 0.11.1 at-most-once
+  ruling untouched). Observability: `gpmq status` and
+  `Subscriber.get_status()` now show per-slot PEL depth (`slot_pending` /
+  `WorkerStatus.pending_pel`, from a single XPENDING group summary).
+  Sticky routing is defined for single-machine (single-instance)
+  deployments and assumes an unchanged hostname across restarts — full
+  rules, semantics, and timeout budgeting in `docs/api/gpmq_api.md`
+  "Sticky Routing (target_worker)".
+  **Deployment constraint (internal protocol, same family as
+  0.9.0/0.11.3):** upgrade **all subscribers** to 0.12.0 before
+  publishers start sending `target_worker` — the old sweep has no
+  live-owner exemption and falsely abandons queued routed entries under
+  load. ABANDONED receipts additionally require publishers >= 0.11.1
+  (see 0.11.3). Mixed versions otherwise degrade safely: old workers
+  ignore the field (plain load balancing), old publishers never set it.
+
+### Changed
+
+- `heartbeat_interval` default **10 -> 15**. The sticky-routing liveness
+  gate, the sweep exemption, and zombie detection all share the
+  `heartbeat_interval * 3` threshold, now 45s — 1.5x headroom over the
+  "single task <= 30s" baseline instead of zero. The sweep/trim cadence
+  follows the heartbeat and slows from ~10s to ~15s; pin
+  `heartbeat_interval: 10` in config to keep the old behavior.
+- **Worker XREADGROUP block 5000 -> 1000 ms, now configurable via
+  `worker_read_block_ms`** (new `SubscriberConfig` field, default 1000,
+  minimum 100): idle workers poll five times more often and a handed-off
+  sticky entry is picked up within ~1s instead of ~5s. What used to be a
+  hardcoded `5s` assumption in the socket-timeout check is now a real
+  cross-field rule on `SubscriberConfig` (model validator:
+  `redis_socket_timeout > worker_read_block_ms / 1000`).
+- **Heartbeat is now flushed between messages, not only between read
+  rounds** (throttled at the same 4s): a worker grinding through a batch
+  of slow handlers no longer lets its heartbeat go stale and be misjudged
+  dead — closing the known gap acknowledged in `worker_manager`. Fast
+  messages pay nothing (in-memory time check); the heartbeat-age sawtooth
+  changes shape.
+
 ## [0.11.3] - 2026-11-13
 
 ### Fixed

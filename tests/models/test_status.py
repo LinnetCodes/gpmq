@@ -170,3 +170,22 @@ class TestWorkerStatus:
         assert status.status == WorkerState.BUSY
         assert status.last_message_id == "123-0"
         assert status.messages_processed == 10
+
+    def test_status_pending_pel_default_zero_and_settable(self):
+        """Test pending_pel defaults to 0 and can be set explicitly."""
+        minimal = WorkerStatus(
+            worker_id="worker-1",
+            process_id=12345,
+            status=WorkerState.RUNNING,
+            last_activity=datetime(2026, 3, 25, 10, 30, 0),
+        )
+        assert minimal.pending_pel == 0
+
+        with_pel = WorkerStatus(
+            worker_id="worker-2",
+            process_id=12346,
+            status=WorkerState.RUNNING,
+            last_activity=datetime(2026, 3, 25, 10, 31, 0),
+            pending_pel=7,
+        )
+        assert with_pel.pending_pel == 7

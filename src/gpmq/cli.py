@@ -409,8 +409,18 @@ def status(ctx: click.Context, fmt: str) -> None:
         for name in names:
             info = adapter.get_subscriber_info(name)
             if info:
-                entry = {"name": name}
+                entry: dict[str, Any] = {"name": name}
                 entry.update(info)
+                try:
+                    summary = adapter.xpending(
+                        str(info.get("stream_name", "gpmq:messages")), name
+                    )
+                    entry["slot_pending"] = {
+                        str(c.get("name", "?")): c.get("pending", 0)
+                        for c in (summary.get("consumers") or [])
+                    }
+                except Exception:
+                    pass  # status display must never fail on one subscriber
                 subscribers.append(entry)
         click.echo(_format_output(subscribers, fmt))
 

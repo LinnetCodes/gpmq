@@ -472,6 +472,57 @@ def test_status_json_format(mock_init, mock_create_adapter):
     assert output == []
 
 
+@patch("gpmq.cli._create_redis_adapter")
+@patch("gpmq.cli._init_cfg_mgr")
+def test_status_json_includes_slot_pending(mock_init, mock_create_adapter):
+    """Task 9: status --format json should include per-slot PEL depths."""
+    mock_redis = MagicMock()
+    mock_redis.get_active_subscribers.return_value = ["sub1"]
+    mock_redis.get_subscriber_info.return_value = {
+        "message_types": ["user_created"],
+        "workers": 2,
+    }
+    mock_redis.xpending.return_value = {
+        "pending": 2,
+        "consumers": [{"name": "sub1:sub1-host-worker-0", "pending": 2}],
+    }
+    mock_ctx = MagicMock()
+    mock_ctx.__enter__ = MagicMock(return_value=mock_redis)
+    mock_ctx.__exit__ = MagicMock(return_value=False)
+    mock_create_adapter.return_value = mock_ctx
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["status", "--format", "json"])
+    assert result.exit_code == 0
+    output = json.loads(result.output)
+    assert output[0]["slot_pending"] == {"sub1:sub1-host-worker-0": 2}
+    mock_redis.xpending.assert_called_once_with("gpmq:messages", "sub1")
+
+
+@patch("gpmq.cli._create_redis_adapter")
+@patch("gpmq.cli._init_cfg_mgr")
+def test_status_xpending_failure_swallowed(mock_init, mock_create_adapter):
+    """Task 9: a failing xpending must not break the status display."""
+    mock_redis = MagicMock()
+    mock_redis.get_active_subscribers.return_value = ["sub1"]
+    mock_redis.get_subscriber_info.return_value = {
+        "message_types": ["user_created"],
+        "workers": 2,
+    }
+    mock_redis.xpending.side_effect = RuntimeError("xpending boom")
+    mock_ctx = MagicMock()
+    mock_ctx.__enter__ = MagicMock(return_value=mock_redis)
+    mock_ctx.__exit__ = MagicMock(return_value=False)
+    mock_create_adapter.return_value = mock_ctx
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["status", "--format", "json"])
+    assert result.exit_code == 0
+    output = json.loads(result.output)
+    assert output[0]["name"] == "sub1"
+    assert "slot_pending" not in output[0]
+
+
 # --- error handling tests (additional) ---
 
 

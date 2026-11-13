@@ -672,3 +672,59 @@ class TestClientPublishForwardsTarget:
 
         sent_msg = client._publisher.publish_message.call_args[0][0]
         assert sent_msg.target_subscribers == ["sub-a"]
+
+
+class TestTargetWorkerPassthrough:
+    """Tests that publish_async/send/publish forward target_worker to the Message.
+
+    Client layer performs no validation (publisher is the authority); these
+    only assert what Publisher.publish_message / send_message receives.
+
+    NOTE: _publisher.publish_message returns a (message_id, handler) tuple that
+    publish_async unpacks, so each test configures the return value accordingly
+    (mirrors the existing TestClientPublishForwardsTarget pattern).
+    """
+
+    def test_publish_async_passes_target_worker_to_message(self, client):
+        client._publisher.publish_message.return_value = ("mid-0", MagicMock())
+
+        client.publish_async("t", {"k": 1}, target_subscribers="sub-a", target_worker=3)
+
+        sent_msg = client._publisher.publish_message.call_args[0][0]
+        assert sent_msg.target_worker == 3
+
+    def test_publish_async_omitted_target_worker_means_none(self, client):
+        client._publisher.publish_message.return_value = ("mid-0", MagicMock())
+
+        client.publish_async("t", {"k": 1})
+
+        sent_msg = client._publisher.publish_message.call_args[0][0]
+        assert sent_msg.target_worker is None
+
+    def test_send_passes_target_worker_to_message(self, client):
+        client._publisher.send_message.return_value = "mid-1"
+
+        client.send("t", {"k": 1}, target_subscribers="sub-a", target_worker=3)
+
+        sent_msg = client._publisher.send_message.call_args[0][0]
+        assert sent_msg.target_worker == 3
+
+    def test_publish_forwards_target_worker_via_publish_async(self, client):
+        mock_handler = MagicMock()
+        mock_handler.wait.return_value = {}
+        client._publisher.publish_message.return_value = ("mid-0", mock_handler)
+
+        client.publish("t", {"k": 1}, target_subscribers="sub-a", target_worker=2)
+
+        sent_msg = client._publisher.publish_message.call_args[0][0]
+        assert sent_msg.target_worker == 2
+
+    def test_publish_omitted_target_worker_means_none(self, client):
+        mock_handler = MagicMock()
+        mock_handler.wait.return_value = {}
+        client._publisher.publish_message.return_value = ("mid-0", mock_handler)
+
+        client.publish("t", {"k": 1})
+
+        sent_msg = client._publisher.publish_message.call_args[0][0]
+        assert sent_msg.target_worker is None

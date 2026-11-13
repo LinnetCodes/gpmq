@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from unittest.mock import MagicMock, patch
 
 from gpmq.config import HandlerConfig, SubscriberConfig
@@ -48,6 +49,8 @@ class TestMaybeAbandonPending:
     def test_abandons_idle_entries(self):
         subscriber = _make_subscriber(pel_abandon_idle_seconds=60.0)
         adapter = _with_redis(subscriber)
+        audit = MagicMock()
+        subscriber._audit = audit  # pre-injected: skip opening SQLite
         adapter.xpending_range.return_value = [_entry("5-0"), _entry("6-0")]
         adapter.xrange.return_value = [("5-0", {"type": "t.x", "publisher": "p"})]
 
@@ -107,6 +110,8 @@ class TestMaybeAbandonPending:
     def test_xrange_failure_still_abandons(self):
         subscriber = _make_subscriber(pel_abandon_idle_seconds=60.0)
         adapter = _with_redis(subscriber)
+        audit = MagicMock()
+        subscriber._audit = audit  # pre-injected: skip opening SQLite
         adapter.xpending_range.return_value = [_entry("5-0")]
         adapter.xrange.side_effect = RuntimeError("boom")
 
@@ -204,6 +209,8 @@ class TestAbandonedReceiptPublish:
     def test_publishes_receipt_on_reply_channel(self):
         subscriber = _make_subscriber(pel_abandon_idle_seconds=60.0)
         adapter = _with_redis(subscriber)
+        audit = MagicMock()
+        subscriber._audit = audit  # pre-injected: skip opening SQLite
         adapter.xpending_range.return_value = [_entry("5-0")]
         adapter.xrange.return_value = [
             ("5-0", {"type": "t.x", "publisher": "p", "reply_token": "tok-1"})
@@ -238,6 +245,8 @@ class TestAbandonedReceiptPublish:
     def test_fire_and_forget_entry_not_published(self):
         subscriber = _make_subscriber(pel_abandon_idle_seconds=60.0)
         adapter = _with_redis(subscriber)
+        audit = MagicMock()
+        subscriber._audit = audit  # pre-injected: skip opening SQLite
         adapter.xpending_range.return_value = [_entry("5-0")]
         adapter.xrange.return_value = [("5-0", {"type": "t.x"})]  # no token
 
@@ -249,6 +258,8 @@ class TestAbandonedReceiptPublish:
     def test_fields_unavailable_skips_publish(self):
         subscriber = _make_subscriber(pel_abandon_idle_seconds=60.0)
         adapter = _with_redis(subscriber)
+        audit = MagicMock()
+        subscriber._audit = audit  # pre-injected: skip opening SQLite
         adapter.xpending_range.return_value = [_entry("5-0")]
         adapter.xrange.return_value = []  # entry already trimmed from stream
 
@@ -260,6 +271,8 @@ class TestAbandonedReceiptPublish:
     def test_publish_failure_still_xacks(self):
         subscriber = _make_subscriber(pel_abandon_idle_seconds=60.0)
         adapter = _with_redis(subscriber)
+        audit = MagicMock()
+        subscriber._audit = audit  # pre-injected: skip opening SQLite
         adapter.xpending_range.return_value = [_entry("5-0")]
         adapter.xrange.return_value = [("5-0", {"reply_token": "tok-1"})]
         adapter.publish.side_effect = RuntimeError("redis down")
@@ -320,3 +333,158 @@ class TestStopSweep:
         subscriber.stop()
         adapter.xpending_range.assert_called_once()
         adapter.trim_stream_to_registered_progress.assert_not_called()
+
+
+class TestRoutingExemption:
+    """Routed entry whose PEL OWNER is alive is exempt from abandon.
+
+    A mis-routed entry legitimately WAITs in the target slot consumer's
+    PEL after the XCLAIM handoff — its idle grows while queued, so the
+    sweep would otherwise abandon a message its (live) owner is about to
+    process. Liveness keys on the PEL OWNER (the entry's consumer), NOT
+    the envelope target: a stranded mis-route in a dead claimer's PEL
+    must stay abandonable.
+    """
+
+    def _entry(self, consumer: str = "abandon_test:h1-worker-1") -> dict:
+        return {
+            "message_id": "1-1",
+            "consumer": consumer,
+            "time_since_delivered": 120_000,
+            "times_delivered": 1,
+        }
+
+    def _routed_fields(self, target: str = "1") -> dict:
+        return {"type": "t.x", "target_worker": target, "reply_token": "tok"}
+
+    def _live_owner(self, age: float) -> list[dict]:
+        # Registry worker_id carries NO subscriber prefix (consumer =
+        # f"{name}:{worker_id}"); last_heartbeat is stored as a string.
+        return [{"worker_id": "h1-worker-1", "last_heartbeat": str(time.time() - age)}]
+
+    def test_exempt_when_owner_fresh(self):
+        subscriber = _make_subscriber(pel_abandon_idle_seconds=60.0, enable_audit=True)
+        adapter = _with_redis(subscriber)
+        audit = MagicMock()
+        subscriber._audit = audit  # pre-injected: skip opening SQLite
+        adapter.xpending_range.return_value = [self._entry()]
+        adapter.xrange.return_value = [("1-1", self._routed_fields())]
+        adapter.get_consumer_group_workers.return_value = self._live_owner(0)
+
+        subscriber._maybe_abandon_pending()
+
+        # Whole chain skipped: no audit, no ABANDONED receipt, no XACK.
+        audit.save_result.assert_not_called()
+        adapter.publish.assert_not_called()
+        adapter.xack.assert_not_called()
+
+    def test_liveness_snapshot_fetched_once_per_round(self):
+        """Regression lock: the worker registry is read ONCE per sweep
+        round, not once per routed candidate — two exempt-eligible
+        entries share a single snapshot read."""
+        subscriber = _make_subscriber(pel_abandon_idle_seconds=60.0, enable_audit=True)
+        adapter = _with_redis(subscriber)
+        audit = MagicMock()
+        subscriber._audit = audit  # pre-injected: skip opening SQLite
+        adapter.xpending_range.return_value = [self._entry(), self._entry()]
+        adapter.xrange.return_value = [("1-1", self._routed_fields())]
+        adapter.get_consumer_group_workers.return_value = self._live_owner(0)
+
+        subscriber._maybe_abandon_pending()
+
+        # BOTH routed entries exempted off ONE registry read.
+        assert adapter.get_consumer_group_workers.call_count == 1
+        audit.save_result.assert_not_called()
+        adapter.publish.assert_not_called()
+        adapter.xack.assert_not_called()
+
+    def test_snapshot_read_failure_exempts_nothing_that_round(self):
+        """A failed snapshot read exempts nothing: every routed entry in
+        the round is treated as orphaned (at-most-once prevails)."""
+        subscriber = _make_subscriber(pel_abandon_idle_seconds=60.0, enable_audit=True)
+        adapter = _with_redis(subscriber)
+        audit = MagicMock()
+        subscriber._audit = audit  # pre-injected: skip opening SQLite
+        adapter.xpending_range.return_value = [self._entry()]
+        adapter.xrange.return_value = [("1-1", self._routed_fields())]
+        adapter.get_consumer_group_workers.side_effect = RuntimeError("redis down")
+
+        subscriber._maybe_abandon_pending()  # must not raise
+
+        adapter.xack.assert_called_once_with("gpmq:messages", "abandon_test", "1-1")
+        result = audit.save_result.call_args[0][1]
+        assert result.status.value == "abandoned"
+        assert result.message_id == "1-1"
+
+    def test_abandoned_when_owner_stale(self):
+        subscriber = _make_subscriber(pel_abandon_idle_seconds=60.0, enable_audit=True)
+        adapter = _with_redis(subscriber)
+        audit = MagicMock()
+        subscriber._audit = audit  # pre-injected: skip opening SQLite
+        adapter.xpending_range.return_value = [self._entry()]
+        adapter.xrange.return_value = [("1-1", self._routed_fields())]
+        # heartbeat_interval=5 -> threshold 15s; 999s old is far stale.
+        adapter.get_consumer_group_workers.return_value = self._live_owner(999)
+
+        subscriber._maybe_abandon_pending()
+
+        adapter.xack.assert_called_once_with("gpmq:messages", "abandon_test", "1-1")
+        result = audit.save_result.call_args[0][1]
+        assert result.status.value == "abandoned"
+        assert result.message_id == "1-1"
+
+    def test_abandoned_when_consumer_unknown(self):
+        subscriber = _make_subscriber(pel_abandon_idle_seconds=60.0)
+        adapter = _with_redis(subscriber)
+        audit = MagicMock()
+        subscriber._audit = audit  # pre-injected: skip opening SQLite
+        adapter.xpending_range.return_value = [self._entry()]
+        adapter.xrange.return_value = [("1-1", self._routed_fields())]
+        adapter.get_consumer_group_workers.return_value = []  # owner unregistered
+
+        subscriber._maybe_abandon_pending()
+
+        adapter.xack.assert_called_once_with("gpmq:messages", "abandon_test", "1-1")
+        result = audit.save_result.call_args[0][1]
+        assert result.status.value == "abandoned"
+        assert result.message_id == "1-1"
+
+    def test_unrouted_entry_never_exempt(self):
+        subscriber = _make_subscriber(pel_abandon_idle_seconds=60.0)
+        adapter = _with_redis(subscriber)
+        audit = MagicMock()
+        subscriber._audit = audit  # pre-injected: skip opening SQLite
+        adapter.xpending_range.return_value = [self._entry()]
+        fields = {"type": "t.x", "reply_token": "tok"}  # no target_worker
+        adapter.xrange.return_value = [("1-1", fields)]
+        adapter.get_consumer_group_workers.return_value = self._live_owner(0)
+
+        subscriber._maybe_abandon_pending()
+
+        adapter.xack.assert_called_once_with("gpmq:messages", "abandon_test", "1-1")
+        result = audit.save_result.call_args[0][1]
+        assert result.status.value == "abandoned"
+        assert result.message_id == "1-1"
+
+    def test_foreign_consumer_prefix_treated_dead(self):
+        subscriber = _make_subscriber(pel_abandon_idle_seconds=60.0)
+        adapter = _with_redis(subscriber)
+        audit = MagicMock()
+        subscriber._audit = audit  # pre-injected: skip opening SQLite
+        adapter.xpending_range.return_value = [
+            self._entry(consumer="other_sub:h1-worker-1")
+        ]
+        adapter.xrange.return_value = [("1-1", self._routed_fields())]
+        adapter.get_consumer_group_workers.return_value = self._live_owner(0)
+
+        subscriber._maybe_abandon_pending()
+
+        # Not our naming scheme -> not exempt. The round-level liveness
+        # snapshot means the registry IS read once per round (even for
+        # foreign consumers) — but a foreign consumer never matches any
+        # worker in the snapshot.
+        assert adapter.get_consumer_group_workers.call_count == 1
+        adapter.xack.assert_called_once_with("gpmq:messages", "abandon_test", "1-1")
+        result = audit.save_result.call_args[0][1]
+        assert result.status.value == "abandoned"
+        assert result.message_id == "1-1"

@@ -151,3 +151,29 @@ class TestInvalidTargetSubscriberError:
         error = InvalidTargetSubscriberError("ping", [("a", "not registered")])
         assert "ping" in str(error)
         assert "a" in str(error)
+
+
+def test_invalid_target_worker_error_attributes():
+    from gpmq.exceptions import InvalidTargetWorkerError
+
+    exc = InvalidTargetWorkerError("ctx-holder", 7, "slot out of range for 4 worker(s)")
+    assert exc.subscriber_name == "ctx-holder"
+    assert exc.target_worker == 7
+    assert exc.reason == "slot out of range for 4 worker(s)"
+    assert "target worker 7" in str(exc)
+    from gpmq.exceptions import GPMQError
+
+    assert isinstance(exc, GPMQError)
+
+
+def test_exceptions_reexported_from_package_root():
+    """All exceptions must be importable from the ``gpmq`` package root.
+
+    ``src/gpmq/__init__.py`` re-exports the public exception hierarchy;
+    ``InvalidTargetWorkerError`` (0.12.0) is included alongside the rest.
+    """
+    import gpmq
+    from gpmq.exceptions import InvalidTargetWorkerError
+
+    assert gpmq.InvalidTargetWorkerError is InvalidTargetWorkerError
+    assert "InvalidTargetWorkerError" in gpmq.__all__

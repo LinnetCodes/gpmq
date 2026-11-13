@@ -58,3 +58,12 @@ class WorkerStatus(BaseModel):
             "a degraded fallback when no registry data is available)."
         ),
     )
+    pending_pel: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Entries currently pending (delivered, unacknowledged) in this "
+            "worker's consumer PEL slice — for sticky-routed subscribers "
+            "this is the slot's queue depth."
+        ),
+    )

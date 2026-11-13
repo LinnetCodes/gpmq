@@ -8,6 +8,7 @@
 
 - **Multiple messaging patterns** — sync, async, fire-and-forget, batch with sliding-window concurrency, and message relay
 - **Targeted publishing** — direct a message to specific subscriber(s) via `target_subscribers`; registered-but-unlisted subscribers discard it
+- **Sticky routing** — pin a message to a specific worker slot via `target_worker` (requires exactly one explicit `target_subscriber`), so workers reuse expensive per-slot contexts without reloading
 - **Configurable run-forever method** — customize the subscriber's main loop with `@run_forever_method`
 - **Redis Streams backend** — reliable message delivery with consumer groups
 - **Multi-process workers** — configurable worker count per subscriber
@@ -101,7 +102,7 @@ redis_port: 6379
 redis_password: ""
 stream_name: "gpmq:messages"
 
-heartbeat_interval: 10
+heartbeat_interval: 15
 ```
 
 **publisher/main.yaml:**
@@ -285,9 +286,9 @@ Shared settings for all components. Loaded as the base layer for both publishers
 | `redis_password` | str | `""` | Redis password |
 | `redis_max_retries` | int | `3` | Max connection retry attempts |
 | `redis_retry_delay` | float | `1.0` | Base retry delay in seconds |
-| `redis_socket_timeout` | float | `10.0` | Redis socket timeout in seconds; must exceed the worker read block (5s) — avoids the redis-py ≥6 default (5s) racing idle reads into transparent retries |
+| `redis_socket_timeout` | float | `10.0` | Redis socket timeout in seconds; must exceed the worker read block (`worker_read_block_ms`, 1s at its default) — avoids redis-py racing idle reads into transparent retries |
 | `stream_name` | str | `"gpmq:messages"` | Redis Stream name |
-| `heartbeat_interval` | int | `10` | Heartbeat interval in seconds |
+| `heartbeat_interval` | int | `15` | Heartbeat interval in seconds (stale/zombie threshold = ×3) |
 | `registry_key_prefix` | str | `"gpmq:"` | Redis key prefix (auto-appends `:`) |
 | `audit_db_path` | str | `"gpmq_audit.db"` | SQLite audit database path |
 | `enable_audit` | bool | `True` | Enable audit logging |
@@ -324,6 +325,7 @@ Extends `GPMQConfig`. Config file must include `cfg_class_name: "SubscriberConfi
 | `handlers` | list[HandlerConfig] | *(required)* | Message handler configurations |
 | `workers` | int | `1` | Number of worker processes |
 | `worker_read_batch_size` | int | `1` | Number of messages each worker reads per `XREADGROUP` round |
+| `worker_read_block_ms` | int | `1000` | Worker `XREADGROUP` block time in milliseconds for reading new messages (the own-PEL poll is non-blocking); bounds mis-routed handoff pickup latency |
 | `subscriber_timeout` | float | `60.0` | Per-subscriber processing timeout (seconds) |
 | `embedded_publisher` | str \| null | `null` | Publisher config path for message relay |
 | `worker_context_processor` | str \| null | `null` | Import path to worker context init function |

@@ -27,3 +27,11 @@ class Message(BaseModel):
     target_subscribers: Optional[list[str]] = Field(
         default=None, description="Optional allow-list of subscriber names"
     )
+    target_worker: Optional[int] = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Optional 0-based worker slot for sticky routing within the "
+            "single target subscriber; None = group load balancing"
+        ),
+    )

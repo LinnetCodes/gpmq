@@ -277,3 +277,73 @@ class TestWorkerManagerGetStatus:
             started, tz=timezone.utc
         )
         manager.stop()
+
+
+class TestPendingPel:
+    """Tests for per-consumer PEL depth in get_worker_status()."""
+
+    def test_get_worker_status_fills_pending_pel(self):
+        """Task 9: pending_pel is filled from one xpending group summary.
+
+        Consumer names in the summary are ``{subscriber_name}:{worker_id}``;
+        each worker's slot depth is looked up from that summary.
+        """
+        from unittest.mock import MagicMock, call
+
+        from gpmq.subscriber.worker_manager import WorkerManager
+
+        config_dict = _make_subscriber_config(name="s", workers=1)
+        subscrib_cfg = SubscriberConfig(**config_dict)
+        ctx = {"subscribe_message_types": subscrib_cfg.get_message_types()}
+
+        mock_redis = MagicMock()
+        mock_redis.get_consumer_group_workers.return_value = []
+        mock_redis.xpending.return_value = {
+            "pending": 2,
+            "consumers": [{"name": "s:s-host-worker-0", "pending": 2}],
+        }
+
+        manager = WorkerManager(config_dict, ctx, redis_conn=mock_redis)
+
+        # No workers tracked -> no status rows.
+        assert manager.get_worker_status() == []
+
+        # Inject a (dead) worker without spawning a process.
+        mock_worker = MagicMock()
+        mock_worker.worker_id = "s-host-worker-0"
+        mock_worker.pid = 1
+        mock_worker.is_alive.return_value = False
+        manager._workers = [mock_worker]
+
+        statuses = manager.get_worker_status()
+        assert len(statuses) == 1
+        assert statuses[0].pending_pel == 2
+        assert statuses[0].status == WorkerState.STOPPED
+        # One xpending call per get_worker_status() invocation, on the
+        # configured stream and the subscriber-name group.
+        assert mock_redis.xpending.call_args == call("gpmq:messages", "s")
+
+    def test_get_worker_status_pending_pel_zero_when_missing(self):
+        """Task 9: a worker absent from the xpending summary reports 0."""
+        from unittest.mock import MagicMock
+
+        from gpmq.subscriber.worker_manager import WorkerManager
+
+        config_dict = _make_subscriber_config(name="s", workers=1)
+        subscrib_cfg = SubscriberConfig(**config_dict)
+        ctx = {"subscribe_message_types": subscrib_cfg.get_message_types()}
+
+        mock_redis = MagicMock()
+        mock_redis.get_consumer_group_workers.return_value = []
+        mock_redis.xpending.return_value = {"pending": 0, "consumers": []}
+
+        manager = WorkerManager(config_dict, ctx, redis_conn=mock_redis)
+
+        mock_worker = MagicMock()
+        mock_worker.worker_id = "s-host-worker-0"
+        mock_worker.pid = 1
+        mock_worker.is_alive.return_value = False
+        manager._workers = [mock_worker]
+
+        statuses = manager.get_worker_status()
+        assert statuses[0].pending_pel == 0

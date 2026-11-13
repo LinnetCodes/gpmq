@@ -13,6 +13,8 @@
 - [GPMQClient](#gpmqclient)
   - [定向发布](#定向发布)
   - [InvalidTargetSubscriberError](#invalidtargetsubscribererror)
+  - [粘性路由（target_worker）](#粘性路由target_worker)
+  - [InvalidTargetWorkerError](#invalidtargetworkererror)
 - [Subscriber](#subscriber)
 - [ResultHandler](#resulthandler)
 - [GPMQAsyncBatchHandler](#gpmqasyncbatchhandler)
@@ -150,6 +152,7 @@ publish(
     correlation_id: Optional[str] = None,
     timeout: Optional[float] = None,
     target_subscribers: Optional[Union[str, list[str]]] = None,
+    target_worker: Optional[int] = None,
 ) -> dict[str, ProcessResult]
 ```
 
@@ -164,6 +167,7 @@ publish(
 | `correlation_id` | `str?` | 可选，用于追踪消息链的关联 ID |
 | `timeout` | `float?` | 最大等待秒数。`None` = 使用配置默认值。 |
 | `target_subscribers` | `str \| list[str] \| None` | 可选，允许处理的订阅者名称白名单。只有列表中的订阅者会处理该消息，已注册但不在列表中的订阅者会丢弃它。`None`（默认）广播给所有匹配的订阅者。详见[定向发布](#定向发布)。 |
+| `target_worker` | `int?` | 可选，粘性路由的 0-based worker 槽位，作用于唯一的目标订阅者；要求显式指定恰一个 `target_subscriber`。详见[粘性路由](#粘性路由target_worker)。 |
 
 **返回值** — `dict[str, ProcessResult]`，以订阅者名称为键。
 
@@ -182,6 +186,7 @@ publish_async(
     payload: dict,
     correlation_id: Optional[str] = None,
     target_subscribers: Optional[Union[str, list[str]]] = None,
+    target_worker: Optional[int] = None,
 ) -> ResultHandler
 ```
 
@@ -195,6 +200,7 @@ publish_async(
 | `payload` | `dict` | 消息载荷 |
 | `correlation_id` | `str?` | 可选，用于追踪消息链的关联 ID |
 | `target_subscribers` | `str \| list[str] \| None` | 可选，允许处理的订阅者名称白名单。详见[定向发布](#定向发布)。 |
+| `target_worker` | `int?` | 可选，粘性路由的 0-based worker 槽位。详见[粘性路由](#粘性路由target_worker)。 |
 
 **返回值** — `ResultHandler`，用于延迟收集结果。
 
@@ -208,6 +214,7 @@ send(
     payload: dict,
     correlation_id: Optional[str] = None,
     target_subscribers: Optional[Union[str, list[str]]] = None,
+    target_worker: Optional[int] = None,
 ) -> Optional[str]
 ```
 
@@ -221,6 +228,7 @@ send(
 | `payload` | `dict` | 消息载荷 |
 | `correlation_id` | `str?` | 可选，用于追踪消息链的关联 ID |
 | `target_subscribers` | `str \| list[str] \| None` | 可选，允许处理的订阅者名称白名单。详见[定向发布](#定向发布)。 |
+| `target_worker` | `int?` | 可选，粘性路由的 0-based worker 槽位。详见[粘性路由](#粘性路由target_worker)。 |
 
 **返回值** — Redis 生成的消息 ID（可用于日志记录）；若设置了 `publish_require_subscriber: true` 且没有已注册的订阅者处理该消息类型，消息会被跳过，返回 `None`。
 
@@ -261,6 +269,62 @@ class InvalidTargetSubscriberError(GPMQError):
 ```
 
 当某个被指定的目标无法处理该消息类型时，由 `publish` / `publish_async` / `send` / 批处理 `send_message`（在 `wait_all` 期间）抛出。`原因` 取值为 `"not registered"`（未知的订阅者名称）或 `"does not handle message type"`（已注册但该类型不在其 handlers 中）。所有无效目标会被聚合后一次性报出。
+
+---
+
+#### 粘性路由（target_worker）
+
+当任务处理需要载入昂贵的可复用上下文时（`Task(n, m)` 需要 `Context(m)`），组内负载均衡会让同一上下文在不同 worker 上反复载入。粘性路由把均衡决策权移交给**发布方**：四个发布接口都接受可选的 `target_worker`——**一个订阅组内的 0-based worker 槽位**——消息会被确定性地投递到该槽位，使每个 worker 只载入一份上下文并长期复用。不传 `target_worker`（默认）时保持组内负载均衡，行为与之前完全一致。
+
+```python
+# 指定 target_worker 时，必须显式指定恰一个 target_subscriber
+results = client.publish("task", payload, target_subscribers="ctx-holder", target_worker=3)
+client.send("task", payload, target_subscribers="ctx-holder", target_worker=3)
+handler = client.publish_async("task", payload, target_subscribers="ctx-holder", target_worker=3)
+
+# 批处理：参数相同；形状类错误在入队时即失败，而不是 wait_all 中途
+with client.async_batch(queue_size=16) as batch:
+    for m in range(8):
+        batch.send_message("task", {"m": m},
+                           target_subscribers="ctx-holder", target_worker=m)
+    results = batch.wait_all()
+```
+
+**规则**
+
+- **槽位从 0 开始编号。** 槽位即 worker ID 的 `-worker-{n}` 后缀（`target_worker=0` 是第一个 worker）。槽位必须落在目标订阅者注册的 worker 数量范围内（`0 <= target_worker < workers`）；注册信息缺失同样拒绝。范围规则与下面的互斥规则都抛出 `InvalidTargetWorkerError`（见[下文](#invalidtargetworkererror)），消息**不会**被写入 Stream。
+- **显式单一接收者（互斥）。** `target_worker` 非 `None` 时，`target_subscribers` 必须显式提供，且归一化后**恰为一个**名称（单个 `str` 视为一个）。不存在"该类型恰只有一个活跃匹配订阅者"的隐式解析——不同订阅者的 `workers` 配置可能不同，且另一订阅者中途声明同类型会静默破坏路由。
+- **单机部署约束。** 槽位号解析为 consumer 名的前提是该订阅者的全部 worker 共享同一 hostname（单订阅者实例部署）。粘性路由仅在**单机部署**下有定义；同一订阅者名跨机部署会使槽位号产生歧义。
+- **重启继承以 hostname 不变为前提。** Worker 以确定性 consumer 名重启，自动继承名下 PEL 中排队的条目——同机重启或崩溃恢复因此自动继承排队的路由消息。hostname 变更或跨机迁移视为全新部署：旧 consumer 名下的残留条目会被孤儿回收放弃，调用方收到 `ABANDONED` 回执（属预期行为，非故障）。
+
+**语义**
+
+- **槽内保序。** 同一槽位内的路由消息按流 ID 顺序处理——降级期间（见下一条）除外，此时错投的 worker 本地处理，不保证跨 worker 的顺序。
+- **死目标降级为本地处理。** 向目标槽位的转交以该槽位心跳新鲜为前提（阈值 `heartbeat_interval * 3`）；目标死亡（或心跳过期）时，收到消息的 worker 自行处理——可用性优先，代价是上下文重复载入。目标存活时，条目在一个读取阻塞周期内（`worker_read_block_ms`，默认 1000ms）被领取。
+- **重启对路由条目是 at-least-once——handler 必须幂等。** 处理中途被中断的路由条目在其 worker 重启后会被重新处理。（非路由消息维持 0.11.1 的 at-most-once 裁定：崩溃残留被跳过，闲置超过 `pel_abandon_idle_seconds` 后被回收放弃，报 `ABANDONED`。）
+- **可能出现 ABANDONED 回执。** 孤儿回收对路由 PEL 条目设有豁免：只要条目**归属**的 worker 心跳新鲜就不放弃（归属者会处理或重放转交）；归属 worker 死亡后，条目在闲置超过 `pel_abandon_idle_seconds` 时被放弃，仍在等待的 RPC 调用方收到 `ABANDONED` 回执。
+- **版本偏斜安全。** 旧 worker 忽略该字段（退化为纯负载均衡）；旧发布方不会设置该字段。注意 0.12.0 CHANGELOG 中的部署顺序约束：发布方启用 `target_worker` 前，订阅者须全部完成升级。
+
+**超时预算与批量建议**
+
+- 单个任务时长必须小于 `heartbeat_interval * 3`（默认 `heartbeat_interval=15` 时为 45 秒）——超过即被判死，转交降级，且其名下排队条目失去回收豁免。确有更长任务时调大 `heartbeat_interval`（如 20 → 阈值 60 秒）。
+- 路由消息的 RPC `wait(timeout)` 必须覆盖目标槽位的排队深度：`timeout >= 槽内排队深度 × 任务时长 + 自身处理 + 领取余量（<= worker_read_block_ms / 1000）`。各槽位深度可通过 `gpmq status` 输出（`slot_pending`）与 `WorkerStatus.pending_pel` 查看。
+- 大批量场景建议改用 `send`（发后即忘）+ 审计库核对，而非逐条收集 RPC 回执——槽位队列一深，逐消息超时必爆。
+- 使用 `GPMQAsyncBatchHandler` 时，`queue_size` 建议设为 **worker 数 × 1~2**：它就是压住槽位排队深度的背压旋钮。避免裸用 `wait(None)`——某个槽位死亡会挂死等待；改用有限超时并配合 `allow_timeout_retry` 再入。
+- 混合负载仍均衡：不带 `target_worker` 的消息继续在所有 worker 间均匀散布。延迟敏感的非路由流量与深度排队的路由流量混跑时，建议分组部署。
+
+---
+
+#### `InvalidTargetWorkerError`
+
+```python
+class InvalidTargetWorkerError(GPMQError):
+    subscriber_name: str
+    target_worker: int
+    reason: str
+```
+
+当 `target_worker` 用法错误时由 `publish` / `publish_async` / `send` 抛出——范围规则（槽位超出目标订阅者的 worker 数量，或注册信息缺失）或互斥规则（`target_worker` 未搭配恰一个显式 `target_subscriber`）。批处理 `send_message` 在**入队时**即对形状规则（非负 `int`；互斥）抛出该异常，使用法错误在首条消息在途之前就失败；范围/注册类校验仍在发送时进行（需要 Redis）。两类违规共用一个异常类型——同属"target_worker 用法错误"一族，以 `reason` 区分。
 
 ---
 
@@ -560,12 +624,13 @@ send_message(
     payload: dict,
     correlation_id: Optional[str] = None,
     target_subscribers: Optional[Union[str, list[str]]] = None,
+    target_worker: Optional[int] = None,
 ) -> None
 ```
 
 将消息加入待发送队列。消息在调用 `wait_all()` 之前不会发布。
 
-`target_subscribers` 会原样保存，并在 `wait_all()` 期间转发给 `client.publish_async()`，归一化和校验在那里进行。详见[定向发布](#定向发布)。
+`target_subscribers` 会原样保存，并在 `wait_all()` 期间转发给 `client.publish_async()`，归一化和校验在那里进行。详见[定向发布](#定向发布)。设置 `target_worker` 时，其**形状**规则（非负 `int`；恰一个显式 `target_subscriber`）在**此处入队时**即校验，使用法错误在首条消息在途之前就失败——范围/注册类校验仍在发送时进行（需要 Redis）。详见[粘性路由](#粘性路由target_worker)。
 
 ---
 
@@ -617,7 +682,7 @@ results = batch.get_all_result()
 | `publish_require_subscriber` | `false` | 没有**已注册**订阅者声明该消息类型时，直接跳过发布（不写入 Stream）。已注册但离线的订阅者仍会收到消息，因此崩溃后仍能补上离线期间的消息。 |
 | `pel_abandon_idle_seconds` | `60.0` | PEL 条目闲置多少秒后被订阅者心跳扫描放弃（XACK 清出 PEL + `abandoned` 审计记录；绝不重投）。`0` 关闭孤儿回收。应显著大于最长 handler 执行时长；RPC 调用方的 timeout 建议显著小于该值（先到期的调用方仍看到自己的 `TIMEOUT`；回收时仍在等待的调用方会收到 `ABANDONED` 回执——见下文）。需要 Redis >= 6.2（IDLE 过滤）；旧版服务器请设为 `0`。 |
 
-**孤儿 pending 条目** — Worker 在处理中途死亡会将其条目留在消费组的 PEL 中。心跳扫描会将闲置超过 `pel_abandon_idle_seconds` 的条目放弃：XACK 清出 PEL、在审计库记为 `abandoned` 结果，且不再卡住保留策略的安全点。绝不重投——中断即终局失败（至多一次处理）：handler 不会观察到任何新状态。回收发生时仍在等待的调用方会在回包频道上收到 `ABANDONED` 回执（由扫描尽力发布，频道与格式和 worker 结果完全一致；发布者侧审计同步落档，与订阅者侧一致）。调用方自身 timeout 先到期的仍看到 `TIMEOUT`——`TIMEOUT` 回执只代表调用方放弃等待，不代表消息死亡；权威终态以审计为准。执行缓慢但活着的 handler 即便条目被提前放弃也无害：它随后写入的真结果会在审计库中覆盖 `abandoned` 占位（调用方可能已提前拿到 `ABANDONED` 回执返回）。
+**孤儿 pending 条目** — Worker 在处理中途死亡会将其条目留在消费组的 PEL 中。心跳扫描会将闲置超过 `pel_abandon_idle_seconds` 的条目放弃：XACK 清出 PEL、在审计库记为 `abandoned` 结果，且不再卡住保留策略的安全点。绝不重投——中断即终局失败（至多一次处理）：handler 不会观察到任何新状态。（粘性路由消息是唯一的例外，且仅在重启路径上：worker 重启后会重新处理自己名下排队的路由条目——见上文"粘性路由"一节；该场景 handler 必须幂等。）回收发生时仍在等待的调用方会在回包频道上收到 `ABANDONED` 回执（由扫描尽力发布，频道与格式和 worker 结果完全一致；发布者侧审计同步落档，与订阅者侧一致）。调用方自身 timeout 先到期的仍看到 `TIMEOUT`——`TIMEOUT` 回执只代表调用方放弃等待，不代表消息死亡；权威终态以审计为准。执行缓慢但活着的 handler 即便条目被提前放弃也无害：它随后写入的真结果会在审计库中覆盖 `abandoned` 占位（调用方可能已提前拿到 `ABANDONED` 回执返回）。
 
 ---
 
@@ -826,6 +891,7 @@ class Message(BaseModel):
     payload: dict
     correlation_id: Optional[str] = None
     target_subscribers: Optional[list[str]] = None
+    target_worker: Optional[int] = None
 ```
 
 消息队列中传递的核心数据单元。
@@ -839,6 +905,7 @@ class Message(BaseModel):
 | `payload` | `dict` | 消息载荷 |
 | `correlation_id` | `str?` | 用于追踪消息链的关联 ID |
 | `target_subscribers` | `list[str]?` | 可选，允许处理的订阅者名称白名单（由发布方法的 `target_subscribers` 设置；`None` = 广播） |
+| `target_worker` | `int?` | 可选，粘性路由的 0-based worker 槽位（由发布方法的 `target_worker` 设置；`None` = 组内负载均衡）。详见[粘性路由](#粘性路由target_worker)。 |
 
 ---
 

@@ -115,3 +115,26 @@ class InvalidTargetSubscriberError(GPMQError):
         super().__init__(
             f"Invalid target subscribers for message type '{message_type}': {detail}"
         )
+
+
+class InvalidTargetWorkerError(GPMQError):
+    """Raised when a message's target_worker routing key is invalid.
+
+    Covers both sticky-routing usage errors (design §2.1): the mutex rule
+    (target_worker requires exactly one explicit target_subscriber) and
+    the range rule (slot must fit the target subscriber's worker count).
+
+    Attributes:
+        subscriber_name: Target subscriber the routing key referred to.
+        target_worker: The offending 0-based worker slot.
+        reason: Human-readable description of the violation.
+    """
+
+    def __init__(self, subscriber_name: str, target_worker: int, reason: str):
+        self.subscriber_name = subscriber_name
+        self.target_worker = target_worker
+        self.reason = reason
+        super().__init__(
+            f"Invalid target worker {target_worker} for subscriber "
+            f"'{subscriber_name}': {reason}"
+        )

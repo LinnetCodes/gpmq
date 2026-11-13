@@ -53,7 +53,7 @@ class TestGPMQConfig:
         assert config.redis_max_retries == 3
         assert config.redis_retry_delay == 1.0
         assert config.stream_name == "gpmq:messages"
-        assert config.heartbeat_interval == 10
+        assert config.heartbeat_interval == 15
         assert config.registry_key_prefix == "gpmq:"
         assert config.audit_db_path == "gpmq_audit.db"
         assert config.log_category == "gpmq"
@@ -94,31 +94,57 @@ class TestGPMQConfig:
             GPMQConfig(heartbeat_interval=4)
         # Boundary: 5 is accepted.
         assert GPMQConfig(heartbeat_interval=5).heartbeat_interval == 5
-        # And the default 10 still works.
-        assert GPMQConfig().heartbeat_interval == 10
+        # And the default 15 still works.
+        assert GPMQConfig().heartbeat_interval == 15
 
 
 class TestRedisSocketTimeout:
-    """Tests for the redis_socket_timeout field (redis-py >=6 default race fix)."""
+    """Tests for the redis_socket_timeout field (redis-py >=6 default race fix).
+
+    The > block cross-validation migrated from GPMQConfig (hardcoded > 5.0
+    against block_ms=5000) to SubscriberConfig's worker_read_block_ms
+    model_validator; see TestWorkerReadBlockMs.
+    """
 
     def test_default_socket_timeout(self):
-        """Default must be 10.0 = worker block (5s) + margin."""
+        """Default must remain 10.0 (kept from the 5s-block era; safe margin)."""
         config = GPMQConfig()
         assert config.redis_socket_timeout == 10.0
 
     def test_socket_timeout_custom_value(self):
-        """Explicit values must pass through."""
+        """Explicit values must pass through on the base config (no rule there)."""
         config = GPMQConfig(redis_socket_timeout=30.0)
         assert config.redis_socket_timeout == 30.0
 
     def test_socket_timeout_must_exceed_worker_block(self):
-        """Values <= 5.0 (hardcoded worker XREADGROUP block_ms=5000) must be rejected."""
+        """socket_timeout <= worker_read_block_ms/1000 rejected on SubscriberConfig."""
+        # Base config no longer enforces anything: publishers never issue a
+        # blocking XREADGROUP, and the block time is subscriber-specific.
+        assert GPMQConfig(redis_socket_timeout=1.0).redis_socket_timeout == 1.0
+        # The old hardcoded rule (> 5.0 against block_ms=5000) is expressed
+        # via SubscriberConfig + worker_read_block_ms.
         with pytest.raises(Exception):  # Pydantic ValidationError
-            GPMQConfig(redis_socket_timeout=5.0)
+            SubscriberConfig(
+                name="s",
+                handlers=[HandlerConfig(message_types=["t"], handler="m.f")],
+                worker_read_block_ms=5000,
+                redis_socket_timeout=5.0,
+            )
         with pytest.raises(Exception):  # Pydantic ValidationError
-            GPMQConfig(redis_socket_timeout=1.0)
-        # Boundary: anything strictly above 5.0 is accepted.
-        assert GPMQConfig(redis_socket_timeout=5.5).redis_socket_timeout == 5.5
+            SubscriberConfig(
+                name="s",
+                handlers=[HandlerConfig(message_types=["t"], handler="m.f")],
+                worker_read_block_ms=9000,
+                redis_socket_timeout=8.0,
+            )
+        # Boundary: strictly above worker_read_block_ms / 1000 is accepted.
+        config = SubscriberConfig(
+            name="s",
+            handlers=[HandlerConfig(message_types=["t"], handler="m.f")],
+            worker_read_block_ms=5000,
+            redis_socket_timeout=5.5,
+        )
+        assert config.redis_socket_timeout == 5.5
 
 
 class TestPublisherConfig:
@@ -903,3 +929,31 @@ class TestPelAbandonIdleSeconds:
             handlers=[HandlerConfig(message_types=["t"], handler="m.f")],
         )
         assert config.pel_abandon_idle_seconds == 60.0
+
+
+class TestWorkerReadBlockMs:
+    def test_default_1000(self):
+        from gpmq.config import SubscriberConfig
+
+        cfg = SubscriberConfig(
+            name="s", handlers=[{"message_types": ["t"], "handler": "m.f"}]
+        )
+        assert cfg.worker_read_block_ms == 1000
+
+    def test_socket_timeout_must_exceed_block(self):
+        import pytest
+
+        from gpmq.config import SubscriberConfig
+
+        with pytest.raises(Exception, match="block"):
+            SubscriberConfig(
+                name="s",
+                handlers=[{"message_types": ["t"], "handler": "m.f"}],
+                worker_read_block_ms=9000,
+                redis_socket_timeout=8.0,
+            )
+
+    def test_heartbeat_interval_default_is_15(self):
+        from gpmq.config import GPMQConfig
+
+        assert GPMQConfig().heartbeat_interval == 15

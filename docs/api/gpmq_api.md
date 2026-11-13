@@ -13,6 +13,8 @@ Configuration and lifecycle management functions, plus the core classes for publ
 - [GPMQClient](#gpmqclient)
   - [Targeted publishing](#targeted-publishing)
   - [InvalidTargetSubscriberError](#invalidtargetsubscribererror)
+  - [Sticky Routing (target_worker)](#sticky-routing-target_worker)
+  - [InvalidTargetWorkerError](#invalidtargetworkererror)
 - [Subscriber](#subscriber)
 - [ResultHandler](#resulthandler)
 - [GPMQAsyncBatchHandler](#gpmqasyncbatchhandler)
@@ -150,6 +152,7 @@ publish(
     correlation_id: Optional[str] = None,
     timeout: Optional[float] = None,
     target_subscribers: Optional[Union[str, list[str]]] = None,
+    target_worker: Optional[int] = None,
 ) -> dict[str, ProcessResult]
 ```
 
@@ -164,6 +167,7 @@ Publish a message and **block** until all subscribers return results (or timeout
 | `correlation_id` | `str?` | Optional ID for tracing message chains |
 | `timeout` | `float?` | Max seconds to wait. `None` = use config default. |
 | `target_subscribers` | `str \| list[str] \| None` | Optional allow-list of subscriber names. Only these subscribers process the message; registered-but-unlisted subscribers discard it. `None` (default) broadcasts to all matching. See [Targeted publishing](#targeted-publishing). |
+| `target_worker` | `int?` | Optional 0-based worker slot for sticky routing within the single target subscriber; requires exactly one explicit `target_subscriber`. See [Sticky Routing](#sticky-routing-target_worker). |
 
 **Returns** — `dict[str, ProcessResult]`, keyed by subscriber name.
 
@@ -182,6 +186,7 @@ publish_async(
     payload: dict,
     correlation_id: Optional[str] = None,
     target_subscribers: Optional[Union[str, list[str]]] = None,
+    target_worker: Optional[int] = None,
 ) -> ResultHandler
 ```
 
@@ -195,6 +200,7 @@ Publish a message and return a `ResultHandler` immediately. Call `handler.wait()
 | `payload` | `dict` | Message payload |
 | `correlation_id` | `str?` | Optional ID for tracing message chains |
 | `target_subscribers` | `str \| list[str] \| None` | Optional allow-list of subscriber names. See [Targeted publishing](#targeted-publishing). |
+| `target_worker` | `int?` | Optional 0-based worker slot for sticky routing. See [Sticky Routing](#sticky-routing-target_worker). |
 
 **Returns** — `ResultHandler` for deferred result collection.
 
@@ -208,6 +214,7 @@ send(
     payload: dict,
     correlation_id: Optional[str] = None,
     target_subscribers: Optional[Union[str, list[str]]] = None,
+    target_worker: Optional[int] = None,
 ) -> Optional[str]
 ```
 
@@ -221,6 +228,7 @@ Fire-and-forget publish. Sends the message to the Redis Stream but does **not** 
 | `payload` | `dict` | Message payload |
 | `correlation_id` | `str?` | Optional ID for tracing message chains |
 | `target_subscribers` | `str \| list[str] \| None` | Optional allow-list of subscriber names. See [Targeted publishing](#targeted-publishing). |
+| `target_worker` | `int?` | Optional 0-based worker slot for sticky routing. See [Sticky Routing](#sticky-routing-target_worker). |
 
 **Returns** — The Redis-generated message ID (useful for logging), or `None` when the message was skipped because `publish_require_subscriber: true` is set and no registered subscriber handles its type.
 
@@ -261,6 +269,62 @@ class InvalidTargetSubscriberError(GPMQError):
 ```
 
 Raised by `publish` / `publish_async` / `send` / batch `send_message` (during `wait_all`) when a named target cannot handle the message type. `reason` is one of `"not registered"` (unknown subscriber name) or `"does not handle message type"` (registered but the type isn't in its handlers). All invalid targets are collected and reported in one exception.
+
+---
+
+#### Sticky Routing (target_worker)
+
+When a task needs an expensive, reusable context (`Task(n, m)` needs `Context(m)`), group load balancing re-loads the same context on every worker. Sticky routing moves the balancing decision to the **publisher**: all four publish interfaces accept an optional `target_worker` — a **0-based worker slot within one subscriber** — and the message is deterministically delivered to that slot, so each worker loads its context once and keeps it hot. Omitting `target_worker` (the default) keeps group load balancing, exactly as before.
+
+```python
+# When target_worker is set, exactly one explicit target_subscriber is required
+results = client.publish("task", payload, target_subscribers="ctx-holder", target_worker=3)
+client.send("task", payload, target_subscribers="ctx-holder", target_worker=3)
+handler = client.publish_async("task", payload, target_subscribers="ctx-holder", target_worker=3)
+
+# Batch: same argument; shape errors fail at queue time, not mid-wait_all
+with client.async_batch(queue_size=16) as batch:
+    for m in range(8):
+        batch.send_message("task", {"m": m},
+                           target_subscribers="ctx-holder", target_worker=m)
+    results = batch.wait_all()
+```
+
+**Rules**
+
+- **0-based slots.** A slot is the `-worker-{n}` suffix of the worker ID (`target_worker=0` is the first worker). The slot must fit the target subscriber's registered worker count (`0 <= target_worker < workers`); a missing worker count is rejected too. The range rule and the mutex rule below both raise `InvalidTargetWorkerError` (see [below](#invalidtargetworkererror)) and the message is **never** written to the stream.
+- **Explicit single receiver (mutex).** A non-`None` `target_worker` requires `target_subscribers` to be given explicitly and to normalize to **exactly one** name (a bare `str` counts as one). There is no implicit "the only matching subscriber" resolution: different subscribers may have different `workers` counts, and a second subscriber registering the same type later would silently break routing.
+- **Single-machine deployment.** A slot resolves to a consumer name that assumes all of the subscriber's workers share one hostname (one subscriber instance). Sticky routing is only defined for **single-machine deployments**; running the same subscriber name across machines makes slot numbers ambiguous.
+- **Restart inheritance assumes an unchanged hostname.** Workers restart under deterministic consumer names and automatically inherit the entries queued in their PEL — same-machine restart or crash recovery therefore inherits queued routed messages for free. A hostname change or cross-machine migration counts as a fresh deployment: leftovers under the old consumer names are orphan-abandoned and callers receive `ABANDONED` receipts (expected behavior, not a fault).
+
+**Semantics**
+
+- **Slot ordering.** Routed messages within a slot are processed in stream-ID order — except during degraded periods (next bullet), where the mis-receiving worker processes locally and cross-worker ordering is not preserved.
+- **A dead target degrades to local processing.** Handoff to the target slot is gated on that slot's heartbeat freshness (`heartbeat_interval * 3`); a dead (or heartbeat-stale) target means the receiving worker processes the message itself — availability first, at the cost of reloading the context. An alive target picks the entry up within one read block (`worker_read_block_ms`, default 1000ms).
+- **Restart is at-least-once for routed entries — handlers must be idempotent.** A routed entry interrupted mid-processing is reprocessed after its worker restarts. (Non-routed messages keep the 0.11.1 at-most-once ruling: crash residue is skipped, swept after `pel_abandon_idle_seconds`, and reported `ABANDONED`.)
+- **ABANDONED receipts are possible.** The orphan sweep exempts a routed PEL entry while its **owner** worker is alive (the owner will process or re-handoff it); once the owner is dead, the entry is abandoned after `pel_abandon_idle_seconds` and a still-waiting RPC caller receives the `ABANDONED` receipt.
+- **Version skew is safe.** Old workers ignore the field (plain load balancing); old publishers never set it. Note the deployment order constraint in the 0.12.0 CHANGELOG: upgrade all subscribers before publishers start sending `target_worker`.
+
+**Timeout budgeting and batch guidance**
+
+- A single task must stay under `heartbeat_interval * 3` (45s at the default `heartbeat_interval=15`) — beyond that its worker is judged dead, handoff degrades, and its queued entries lose the sweep exemption. For longer tasks raise `heartbeat_interval` (e.g. 20 → 60s threshold).
+- The RPC `wait(timeout)` for a routed message must cover its slot's queue: `timeout >= slot queue depth × task duration + own processing + pickup margin (<= worker_read_block_ms / 1000)`. Per-slot depth is visible in `gpmq status` output (`slot_pending`) and `WorkerStatus.pending_pel`.
+- Large batches should prefer `send` (fire-and-forget) plus audit-store reconciliation over collecting every RPC receipt — deep slot queues blow per-message timeouts.
+- With `GPMQAsyncBatchHandler`, set `queue_size` to roughly **workers × 1–2**: it is the backpressure knob that keeps slot queues shallow. Avoid a bare `wait(None)` — a dead slot would hang the wait; use a finite timeout and re-enter with `allow_timeout_retry`.
+- Mixed loads stay balanced: messages without `target_worker` continue to spread evenly over all workers. Latency-sensitive non-routed traffic alongside deep routed queues is a reason to split deployments.
+
+---
+
+#### `InvalidTargetWorkerError`
+
+```python
+class InvalidTargetWorkerError(GPMQError):
+    subscriber_name: str
+    target_worker: int
+    reason: str
+```
+
+Raised by `publish` / `publish_async` / `send` when `target_worker` is used incorrectly — the range rule (slot out of range for the target subscriber's worker count, or worker count unknown) or the mutex rule (`target_worker` without exactly one explicit `target_subscriber`). Batch `send_message` raises it at **queue time** for the shape rules (non-negative `int`; mutex) so a usage error fails before the first message is in flight; range/registration checks stay at publish time (they need Redis). Both violations share one exception type — they are the same "wrong target_worker usage" family, distinguished by `reason`.
 
 ---
 
@@ -560,12 +624,13 @@ send_message(
     payload: dict,
     correlation_id: Optional[str] = None,
     target_subscribers: Optional[Union[str, list[str]]] = None,
+    target_worker: Optional[int] = None,
 ) -> None
 ```
 
 Queue a message for deferred sending. Messages are not published until `wait_all()` is called.
 
-`target_subscribers` is stored as-is and forwarded to `client.publish_async()` during `wait_all()`; normalization and validation happen there. See [Targeted publishing](#targeted-publishing).
+`target_subscribers` is stored as-is and forwarded to `client.publish_async()` during `wait_all()`; normalization and validation happen there. See [Targeted publishing](#targeted-publishing). When `target_worker` is set, its **shape** rules (non-negative `int`; exactly one explicit `target_subscriber`) are checked **here, at queue time**, so a usage error fails before the first message is in flight — range/registration checks still happen at publish time (they need Redis). See [Sticky Routing](#sticky-routing-target_worker).
 
 ---
 
@@ -617,7 +682,7 @@ Retention is configured through these `GPMQConfig` fields (set in `gpmq/common.y
 | `publish_require_subscriber` | `false` | Skip the publish entirely (no stream entry) when no **registered** subscriber declares the message type. Registered-but-offline subscribers still receive messages, so crash catch-up is preserved. |
 | `pel_abandon_idle_seconds` | `60.0` | Seconds a pending (PEL) entry must stay idle before the subscriber's heartbeat scan abandons it (XACK out of the PEL + `abandoned` audit record; never redelivered). `0` disables orphan recovery. Keep comfortably above the longest handler runtime; RPC caller timeouts should stay well below this value (a caller that gives up first still sees its own `TIMEOUT`; one still waiting when the sweep runs receives an `ABANDONED` receipt — see below). Requires Redis >= 6.2 (the IDLE filter); on older servers set `0`. |
 
-**Orphaned pending entries** — A worker that dies mid-processing leaves its entry in the group's PEL. The heartbeat scan abandons entries idle beyond `pel_abandon_idle_seconds`: each is XACK'd out of the PEL, recorded as an `abandoned` result in the audit store, and no longer pins the retention safe point. Nothing is ever redelivered — an interruption is a terminal failure (at-most-once processing): handlers see no new states. A caller still waiting when the sweep runs receives the `ABANDONED` receipt on the reply channel (published best-effort in the sweep, same channel and format as worker results; the publisher-side audit records it, agreeing with the subscriber side). A caller whose own timeout fires earlier still sees `TIMEOUT` — a `TIMEOUT` receipt means the caller gave up, not that the message died; the authoritative terminal state is in the audit. A live-but-slow handler whose entry is abandoned early is harmless: its late real result overwrites the `abandoned` placeholder in the audit store (the caller may already have returned the `ABANDONED` receipt).
+**Orphaned pending entries** — A worker that dies mid-processing leaves its entry in the group's PEL. The heartbeat scan abandons entries idle beyond `pel_abandon_idle_seconds`: each is XACK'd out of the PEL, recorded as an `abandoned` result in the audit store, and no longer pins the retention safe point. Nothing is ever redelivered — an interruption is a terminal failure (at-most-once processing): handlers see no new states. (Sticky-routed messages are the one exception, on the restart path only: a restarted worker re-processes its own queued routed entries — see the Sticky Routing section above; handlers there must be idempotent.) A caller still waiting when the sweep runs receives the `ABANDONED` receipt on the reply channel (published best-effort in the sweep, same channel and format as worker results; the publisher-side audit records it, agreeing with the subscriber side). A caller whose own timeout fires earlier still sees `TIMEOUT` — a `TIMEOUT` receipt means the caller gave up, not that the message died; the authoritative terminal state is in the audit. A live-but-slow handler whose entry is abandoned early is harmless: its late real result overwrites the `abandoned` placeholder in the audit store (the caller may already have returned the `ABANDONED` receipt).
 
 ---
 
@@ -826,6 +891,7 @@ class Message(BaseModel):
     payload: dict
     correlation_id: Optional[str] = None
     target_subscribers: Optional[list[str]] = None
+    target_worker: Optional[int] = None
 ```
 
 The core data unit passed through the message queue.
@@ -839,6 +905,7 @@ The core data unit passed through the message queue.
 | `payload` | `dict` | Message payload |
 | `correlation_id` | `str?` | For tracing message chains |
 | `target_subscribers` | `list[str]?` | Optional allow-list of subscriber names (set by `target_subscribers` on the publish methods; `None` = broadcast) |
+| `target_worker` | `int?` | Optional 0-based worker slot for sticky routing (set by `target_worker` on the publish methods; `None` = group load balancing). See [Sticky Routing](#sticky-routing-target_worker). |
 
 ---
 

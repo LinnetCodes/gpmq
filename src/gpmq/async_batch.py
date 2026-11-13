@@ -5,6 +5,7 @@ from types import TracebackType
 from typing import Any, Optional, Union
 
 from gpmq.client import GPMQClient
+from gpmq.exceptions import InvalidTargetWorkerError
 from gpmq.models.result import ProcessResult, ProcessStatus
 from gpmq.progress import GPMQProgress
 from gpmq.publisher.result_handler import ResultHandler
@@ -32,7 +33,13 @@ class GPMQAsyncBatchHandler:
         self._timeout = timeout
         self._queue_size = queue_size
         self._pending_messages: list[
-            tuple[str, dict[str, Any], Optional[str], Optional[Union[str, list[str]]]]
+            tuple[
+                str,
+                dict[str, Any],
+                Optional[str],
+                Optional[Union[str, list[str]]],
+                Optional[int],
+            ]
         ] = []
         self._all_results: list[dict[str, ProcessResult]] = []
         self._waited = False
@@ -43,6 +50,7 @@ class GPMQAsyncBatchHandler:
         payload: dict[str, Any],
         correlation_id: Optional[str] = None,
         target_subscribers: Optional[Union[str, list[str]]] = None,
+        target_worker: Optional[int] = None,
     ) -> None:
         """Store message for deferred publishing.
 
@@ -53,9 +61,51 @@ class GPMQAsyncBatchHandler:
             target_subscribers: Optional subscriber name or list of names.
                 Stored as-is and forwarded to ``client.publish_async`` during
                 ``wait_all``; normalization and validation happen there.
+            target_worker: Optional 0-based worker slot for sticky routing;
+                when set, *target_subscribers* must normalize to exactly
+                one name (checked HERE, at queue time — a usage error must
+                fail before the first message is in flight, not mid-
+                ``wait_all``); a malformed *target_subscribers* (empty
+                list, blank names) raises InvalidTargetWorkerError for
+                the same reason, instead of the bare ValueError the
+                direct publish path raises. Range/registration checks
+                stay at publish time (they need Redis).
         """
+        if target_worker is not None:
+            if isinstance(target_worker, bool) or not isinstance(target_worker, int):
+                raise InvalidTargetWorkerError(
+                    str(target_subscribers),
+                    target_worker if isinstance(target_worker, int) else -1,
+                    "target_worker must be a non-negative int",
+                )
+            if target_worker < 0:
+                raise InvalidTargetWorkerError(
+                    str(target_subscribers),
+                    target_worker,
+                    "target_worker must be a non-negative int",
+                )
+            try:
+                normalized = GPMQClient._normalize_targets(target_subscribers)
+            except ValueError as exc:
+                # Malformed target_subscribers under a routing key is a
+                # sticky-routing usage error: surface it as the routing
+                # exception, matching the mutex-rule violations above.
+                # (Without target_worker, publish_async's own bare
+                # ValueError stands.)
+                raise InvalidTargetWorkerError(
+                    str(target_subscribers),
+                    target_worker,
+                    f"invalid target_subscribers: {exc}",
+                ) from exc
+            if normalized is None or len(normalized) != 1:
+                raise InvalidTargetWorkerError(
+                    ",".join(normalized or []) or "<none>",
+                    target_worker,
+                    "target_worker requires exactly one explicit "
+                    "target_subscriber (design §2.1 mutex rule)",
+                )
         self._pending_messages.append(
-            (message_type, payload, correlation_id, target_subscribers)
+            (message_type, payload, correlation_id, target_subscribers, target_worker)
         )
 
     def wait_all(self) -> list[dict[str, ProcessResult]]:
@@ -87,8 +137,8 @@ class GPMQAsyncBatchHandler:
         next_idx = 0
 
         for i in range(window_size):
-            msg_type, payload, corr_id, target = self._pending_messages[i]
-            handler = self._client.publish_async(msg_type, payload, corr_id, target)
+            msg_type, payload, corr_id, target, tw = self._pending_messages[i]
+            handler = self._client.publish_async(msg_type, payload, corr_id, target, tw)
             active.append((i, handler))
             next_idx = i + 1
 
@@ -116,12 +166,12 @@ class GPMQAsyncBatchHandler:
                     result_map[orig_idx] = result
                     # Refill: send next pending message
                     if next_idx < total:
-                        msg_type, payload, corr_id, target = self._pending_messages[
+                        msg_type, payload, corr_id, target, tw = self._pending_messages[
                             next_idx
                         ]
                         try:
                             new_handler = self._client.publish_async(
-                                msg_type, payload, corr_id, target
+                                msg_type, payload, corr_id, target, tw
                             )
                             new_active.append((next_idx, new_handler))
                         except Exception as exc:

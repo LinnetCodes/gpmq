@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, ClassVar, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from gpconfig import GPConfig, GPConfigManager
 
 if TYPE_CHECKING:
@@ -43,8 +43,9 @@ class GPMQConfig(GPConfig):
         redis_password: Redis password (empty string if none)
         redis_max_retries: Maximum connection retry attempts
         redis_retry_delay: Base delay for retry in seconds
-        redis_socket_timeout: Redis socket timeout in seconds (must exceed
-            the worker XREADGROUP block time of 5s)
+        redis_socket_timeout: Redis socket timeout in seconds (on
+            SubscriberConfig it must exceed worker_read_block_ms / 1000;
+            see the SubscriberConfig model_validator)
         stream_name: Name of the Redis Stream
         heartbeat_interval: Heartbeat interval in seconds
         registry_key_prefix: Prefix for registry keys in Redis
@@ -102,8 +103,9 @@ class GPMQConfig(GPConfig):
     redis_socket_timeout: float = Field(
         default=10.0,
         description=(
-            "Redis socket timeout in seconds (must exceed the worker "
-            "XREADGROUP block time of 5s; see validator)"
+            "Redis socket timeout in seconds (SubscriberConfig additionally "
+            "requires it to exceed worker_read_block_ms / 1000; see the "
+            "SubscriberConfig model_validator)"
         ),
     )
 
@@ -112,7 +114,7 @@ class GPMQConfig(GPConfig):
 
     # Registry
     heartbeat_interval: int = Field(
-        default=10,
+        default=15,
         ge=5,
         description="Heartbeat interval in seconds (minimum 5; see validator)",
     )
@@ -178,46 +180,25 @@ class GPMQConfig(GPConfig):
         """Reject heartbeat_interval below 5.
 
         Workers flush their worker-level heartbeat on a 4-second throttle
-        inside a 5-second XREADGROUP block (worker.py
-        HEARTBEAT_THROTTLE_SECONDS), so the worst-case gap between
-        heartbeats is throttle + block = 4 + 5 = 9s (traffic ending right
-        after a skipped check pushes two checks one full block apart).
+        inside the XREADGROUP block (worker.py
+        HEARTBEAT_THROTTLE_SECONDS; block now defaults to 1000ms — see
+        ``worker_read_block_ms``), so the worst-case gap between heartbeats
+        is throttle + block = 4 + 1 = 5s (traffic ending right after a
+        skipped check pushes two checks one full block apart).
         The stale-detection threshold is heartbeat_interval * 3; the
-        invariant it relies on is ``heartbeat_interval * 3 > 9s``. An
-        interval below 5 would put the threshold (<= 12s) too close to
-        that worst case and risk flagging healthy workers as stale.
+        invariant it relies on is ``heartbeat_interval * 3 > 5s``, which
+        even the floor of 5 satisfies with 3x headroom (15s vs 5s). The
+        ge=5 floor is kept so configs that lengthen the block again
+        (e.g. worker_read_block_ms=5000 -> worst case 4 + 5 = 9s) still
+        leave comfortable margin (threshold 15s at the floor).
         """
         if v < 5:
             raise ValueError(
                 f"heartbeat_interval must be >= 5 (got {v}); workers flush "
-                f"their heartbeat at worst every ~9s (4s throttle + 5s read "
-                f"block), and the stale-detection threshold is "
-                f"heartbeat_interval*3, so a smaller interval would falsely "
-                f"flag healthy workers as stale"
-            )
-        return v
-
-    @field_validator("redis_socket_timeout")
-    @classmethod
-    def _ensure_socket_timeout_above_block(cls, v: float) -> float:
-        """Reject redis_socket_timeout <= the worker XREADGROUP block time.
-
-        Workers issue a hardcoded XREADGROUP with block_ms=5000 (worker.py
-        _read_and_process). redis-py's official guidance requires
-        socket_timeout strictly greater than any blocking command duration:
-        at <= 5s the client timeout races (and by network RTT, loses to)
-        the server's 5s nil reply, so redis-py >= 6 disconnects and
-        transparently re-issues the whole blocking command — idle reads
-        then take multiples of 5s and eventually raise TimeoutError after
-        the built-in retries are exhausted.
-        """
-        if v <= 5.0:
-            raise ValueError(
-                f"redis_socket_timeout must be > 5.0 seconds (got {v}); workers "
-                f"issue a hardcoded XREADGROUP with block_ms=5000, and redis-py "
-                f"requires socket_timeout strictly greater than the block "
-                f"duration, otherwise every idle read races the client timeout "
-                f"and is transparently retried"
+                f"their heartbeat at worst every ~5s (4s throttle + 1s read "
+                f"block, see worker_read_block_ms), and the stale-detection "
+                f"threshold is heartbeat_interval*3, so a smaller interval "
+                f"would falsely flag healthy workers as stale"
             )
         return v
 
@@ -265,6 +246,9 @@ class SubscriberConfig(GPMQConfig):
         workers: Number of worker processes
         worker_read_batch_size: Number of messages each worker reads per XREADGROUP round
         subscriber_timeout: Timeout for individual subscriber in seconds
+        worker_read_block_ms: Worker XREADGROUP block time in ms for reading
+            NEW entries (own-PEL poll is non-blocking); redis_socket_timeout
+            must exceed worker_read_block_ms / 1000
         embedded_publisher: publisher config path for an embedded publisher in a subscriber that do message relay
         worker_context_processor: Import path to a worker context processor function
         worker_context_finalizer: Import path to a worker context finalizer function
@@ -290,6 +274,33 @@ class SubscriberConfig(GPMQConfig):
     subscriber_timeout: float = Field(
         default=60.0, ge=1.0, description="Subscriber processing timeout in seconds"
     )
+    worker_read_block_ms: int = Field(
+        default=1000,
+        ge=100,
+        description=(
+            "Worker XREADGROUP block time in milliseconds for reading NEW "
+            "entries (the own-PEL poll is non-blocking); bounded pickup "
+            "latency for mis-routed sticky handoffs"
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _ensure_socket_timeout_above_block(self) -> "SubscriberConfig":
+        """Reject redis_socket_timeout <= the worker XREADGROUP block time.
+
+        redis-py requires socket_timeout strictly greater than any blocking
+        command duration; the block time is now ``worker_read_block_ms``
+        (was hardcoded 5000).
+        """
+        block_s = self.worker_read_block_ms / 1000.0
+        if self.redis_socket_timeout <= block_s:
+            raise ValueError(
+                f"redis_socket_timeout must be > {block_s}s (got "
+                f"{self.redis_socket_timeout}); workers issue a blocking "
+                f"XREADGROUP with worker_read_block_ms={self.worker_read_block_ms}"
+            )
+        return self
+
     embedded_publisher: str | None = Field(
         default=None,
         description="Publisher config path for embedded publisher in worker context",

@@ -36,6 +36,7 @@ from gpmq.exceptions import (
     HandlerTypeMismatchError,
     InvalidMessageError,
     InvalidTargetSubscriberError,
+    InvalidTargetWorkerError,
     RedisConnectionError,
 )
 
@@ -59,7 +60,7 @@ from gpmq.subscriber import worker_context_finalizer, worker_context_processor
 from gpmq.subscriber.handler import HandlerRegistry, message_handler
 from gpmq.subscriber.subscriber import Subscriber
 
-__version__ = "0.11.3"
+__version__ = "0.12.0"
 
 __all__ = [
     # Process policy
@@ -88,6 +89,7 @@ __all__ = [
     "RedisConnectionError",
     "InvalidMessageError",
     "InvalidTargetSubscriberError",
+    "InvalidTargetWorkerError",
     "DuplicateMessageTypeError",
     "HandlerTypeMismatchError",
     # Storage

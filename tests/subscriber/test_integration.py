@@ -574,8 +574,9 @@ class TestWorkerContextFinalizerE2E:
                 f"worker never registered itself in Redis (exitcode={worker.exitcode})"
             )
 
-            # Graceful stop: read loop notices the event within one 5s
-            # XREADGROUP block, then run()'s finally calls _cleanup().
+            # Graceful stop: read loop notices the event within one 1s
+            # XREADGROUP block (worker_read_block_ms default 1000ms),
+            # then run()'s finally calls _cleanup().
             worker._stop_event.set()
             worker.join(timeout=30)
 
